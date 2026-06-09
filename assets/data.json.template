@@ -1,0 +1,8 @@
+{
+  "title": "My interactive artifact",
+  "source": "REPLACE_WITH_DATA_SOURCE_DESCRIPTION",
+  "nodes": [
+    { "id": "a", "label": "First item", "body": "In Pin mode, click this card for a point pin — or select this text for an area pin that sends the exact quote to Claude." },
+    { "id": "b", "label": "Second item", "body": "Every node here is commentable; Claude's update_node can patch any node by its id." }
+  ]
+}

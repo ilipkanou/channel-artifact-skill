@@ -1,0 +1,353 @@
+#!/usr/bin/env bun
+/**
+ * __PLUGIN_NAME__ channel plugin for Claude Code.
+ *
+ * - Serves an interactive HTML artifact at http://localhost:__PORT__.
+ * - When a user pins a comment in the UI, it is forwarded to the Claude Code
+ *   session as a `notifications/claude/channel` event.
+ * - Claude addresses the comment and calls the `mark_addressed` /
+ *   `update_node` / `update_data` tools to update the artifact in place.
+ *   The UI live-refreshes via WebSocket.
+ */
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { ServerWebSocket } from "bun";
+
+const DIR = import.meta.dir;
+const PORT = Number(process.env.__PLUGIN_NAME_UPPER___PORT ?? __PORT__);
+const COMMENTS_PATH = join(DIR, "comments.json");
+const DATA_PATH = join(DIR, "data.json");
+const HTML_PATH = join(DIR, "index.html");
+
+type Comment = {
+  id: string;
+  nodeId: string;
+  nodeLabel: string;
+  text: string;
+  createdAt: string;
+  status: "pending" | "addressed";
+  response: string | null;
+  addressedAt: string | null;
+  // Optional positional fields (set when dropped via Pin Mode)
+  x?: number;
+  y?: number;
+  pageWidth?: number;
+  pageHeight?: number;
+  anchorNodeId?: string | null;
+  contextSnippet?: string | null;
+  // Set when this comment is a follow-up reply on an existing pin (thread).
+  parentId?: string | null;
+  // "point" (single click) or "area" (text selection). Area pins carry rects + an exact quote in contextSnippet.
+  kind?: "point" | "area";
+  rects?: Array<{ x: number; y: number; w: number; h: number }>;
+};
+
+const clients = new Set<ServerWebSocket<unknown>>();
+
+function broadcast(event: string, payload: unknown = {}) {
+  const data = JSON.stringify({ type: event, ...(payload as object) });
+  for (const ws of clients) if (ws.readyState === 1) ws.send(data);
+}
+
+async function readJson<T>(p: string): Promise<T> {
+  return JSON.parse(await readFile(p, "utf8")) as T;
+}
+
+async function writeComments(file: { comments: Comment[] }) {
+  await writeFile(COMMENTS_PATH, JSON.stringify(file, null, 2));
+  broadcast("comments-updated");
+}
+
+async function writeData(data: unknown) {
+  await writeFile(DATA_PATH, JSON.stringify(data, null, 2));
+  broadcast("data-updated");
+}
+
+// --- MCP server (stdio) ---
+const mcp = new Server(
+  { name: "__PLUGIN_NAME__", version: "0.1.0" },
+  {
+    capabilities: { tools: {}, experimental: { "claude/channel": {} } },
+    instructions: `Pinned comments from the __PLUGIN_NAME__ artifact arrive as <channel source="__PLUGIN_NAME__" chat_id="artifact" message_id="..."> events. The meta object has comment_id, node_id, node_label, and (for freeform/area pins) pin_x/pin_y/anchor_node_id/context_snippet/comment_type.
+
+node_id maps to an entry in data.json — an object with a matching "id" somewhere in the data. For freeform pins (node_id="freeform"), use anchor_node_id + context_snippet for context.
+
+<<CUSTOMISE: describe THIS artifact's domain here — what the data represents, what each node means, and any voice/style rules replies must follow.>>
+
+When a comment arrives:
+1. If it asks to CHANGE the artifact, edit data.json with update_node(node_id, { patch }) — the patch's keys are merged into the matched node. Use update_data only to replace the whole document (rare).
+2. Then call mark_addressed(comment_id, response) with a SHORT (≤3 sentences) plain-text reply shown under the pin. If you changed the data, state the change as "before → after" in one line so nothing is silently overwritten.
+3. If it only asks a QUESTION, answer in mark_addressed — short and plain. Use update_node only when the data should actually change.
+
+If the channel meta has parent_id, this is a FOLLOW-UP on an earlier pinned comment — read comments.json for the thread (the comment whose id === parent_id, plus any earlier replies sharing that parent_id) and continue it, making further edits if asked.
+
+If the channel meta has comment_type="area", the context_snippet is the EXACT text the user selected on the page — treat it as a precise quote and act on that specific wording. comment_type="point" is a single-point pin (context_snippet is just nearby text, less precise).
+
+Do NOT narrate your process. Never describe which tools you called, what you investigated, or that this arrived over a channel. The reply is only what the user reads under their pinned note.
+
+The artifact is at http://localhost:${PORT}. Comments persist in comments.json.`,
+  },
+);
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: "mark_addressed",
+      description: "Mark a pinned comment as addressed with a response shown beneath it in the UI. Use this once you've answered the user's question.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          comment_id: { type: "string", description: "The id from the channel meta" },
+          response: { type: "string", description: "Short plain reply (≤3 sentences) shown under the pin. No process narration." },
+        },
+        required: ["comment_id", "response"],
+      },
+    },
+    {
+      name: "update_node",
+      description: "Patch a single node in data.json. node_id matches an object with that id anywhere in the data (searched across array properties). The patch object's keys are merged into that node — e.g. { label: \"...\" } or { count: 42 }.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          node_id: { type: "string" },
+          patch: { type: "object", description: "Object whose keys overwrite the node's keys." },
+        },
+        required: ["node_id", "patch"],
+      },
+    },
+    {
+      name: "update_data",
+      description: "Replace the entire data.json. Use sparingly — only for full refreshes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          data: { type: "object" },
+        },
+        required: ["data"],
+      },
+    },
+  ],
+}));
+
+mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+  try {
+    switch (req.params.name) {
+      case "mark_addressed": {
+        const id = String(args.comment_id);
+        const response = String(args.response);
+        const file = await readJson<{ comments: Comment[] }>(COMMENTS_PATH);
+        const c = file.comments.find((x) => x.id === id);
+        if (!c) throw new Error(`comment not found: ${id}`);
+        c.status = "addressed";
+        c.response = response;
+        c.addressedAt = new Date().toISOString();
+        await writeComments(file);
+        return { content: [{ type: "text", text: `marked addressed: ${id}` }] };
+      }
+      case "update_node": {
+        const nodeId = String(args.node_id);
+        const patch = (args.patch ?? {}) as Record<string, unknown>;
+        const data = await readJson<any>(DATA_PATH);
+        // Generic lookup: search every array property of data for an object whose
+        // id === nodeId, descending into nested arrays. First match wins.
+        // Customise this if your data shape needs a more specific match.
+        function findById(obj: any): any {
+          if (!obj || typeof obj !== "object") return null;
+          for (const v of Object.values(obj)) {
+            if (!Array.isArray(v)) continue;
+            for (const item of v) {
+              if (item && typeof item === "object") {
+                if (item.id === nodeId) return item;
+                const nested = findById(item);
+                if (nested) return nested;
+              }
+            }
+          }
+          return null;
+        }
+        const target = findById(data);
+        if (!target) throw new Error(`node not found: ${nodeId}`);
+        Object.assign(target, patch);
+        await writeData(data);
+        return { content: [{ type: "text", text: `patched ${nodeId}` }] };
+      }
+      case "update_data": {
+        const data = args.data as Record<string, unknown>;
+        if (!data || typeof data !== "object") throw new Error("data must be an object");
+        await writeData(data);
+        return { content: [{ type: "text", text: "data.json replaced" }] };
+      }
+      default:
+        return {
+          content: [{ type: "text", text: `unknown tool: ${req.params.name}` }],
+          isError: true,
+        };
+    }
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `${req.params.name}: ${err instanceof Error ? err.message : err}` }],
+      isError: true,
+    };
+  }
+});
+
+await mcp.connect(new StdioServerTransport());
+
+function deliverChannel(comment: Comment) {
+  const positional = typeof comment.x === "number" && typeof comment.y === "number";
+  // CRITICAL: channel meta MUST be Record<string, string>. Numbers / nulls
+  // throw Zod validation in Claude's stdio handler and silently kill the
+  // transport after the first notification. Always String() and drop nullish.
+  void mcp.notification({
+    method: "notifications/claude/channel",
+    params: {
+      content: comment.text,
+      meta: {
+        chat_id: "artifact",
+        message_id: comment.id,
+        comment_id: comment.id,
+        node_id: comment.nodeId,
+        node_label: comment.nodeLabel,
+        ts: comment.createdAt,
+        ...(comment.parentId ? { parent_id: comment.parentId } : {}),
+        ...(comment.kind ? { comment_type: comment.kind } : {}),
+        ...(positional
+          ? {
+              pin_x: String(comment.x),
+              pin_y: String(comment.y),
+              page_width: String(comment.pageWidth ?? ""),
+              page_height: String(comment.pageHeight ?? ""),
+              ...(comment.anchorNodeId ? { anchor_node_id: comment.anchorNodeId } : {}),
+              ...(comment.contextSnippet ? { context_snippet: comment.contextSnippet } : {}),
+            }
+          : {}),
+      },
+    },
+  });
+}
+
+// --- HTTP / WebSocket UI ---
+// If another instance already owns the port, run stdio-only — tool calls still
+// land in the shared comments.json / data.json on disk. Without this, multiple
+// Claude sessions launching the same plugin would each crash on EADDRINUSE
+// and tear down the MCP transport.
+let httpServer: ReturnType<typeof Bun.serve> | null = null;
+try {
+  httpServer = Bun.serve({
+    port: PORT,
+    hostname: "127.0.0.1",
+    async fetch(req, server) {
+      const url = new URL(req.url);
+
+      if (url.pathname === "/ws") {
+        if (server.upgrade(req)) return;
+        return new Response("upgrade failed", { status: 400 });
+      }
+
+      if (url.pathname === "/" || url.pathname === "/index.html") {
+        return new Response(await readFile(HTML_PATH), {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+
+      if (url.pathname === "/data.json") {
+        return new Response(await readFile(DATA_PATH), {
+          headers: { "content-type": "application/json", "cache-control": "no-store" },
+        });
+      }
+
+      if (url.pathname === "/comments.json") {
+        return new Response(await readFile(COMMENTS_PATH), {
+          headers: { "content-type": "application/json", "cache-control": "no-store" },
+        });
+      }
+
+      if (url.pathname === "/comment" && req.method === "POST") {
+        const body = (await req.json()) as Partial<Comment> & { text: string };
+        if (!body?.nodeId || !body?.text?.trim()) {
+          return new Response(JSON.stringify({ error: "nodeId and text required" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const file = await readJson<{ comments: Comment[] }>(COMMENTS_PATH);
+        const entry: Comment = {
+          id: randomUUID(),
+          nodeId: body.nodeId,
+          nodeLabel: body.nodeLabel ?? body.nodeId,
+          text: body.text.trim(),
+          createdAt: new Date().toISOString(),
+          status: "pending",
+          response: null,
+          addressedAt: null,
+          parentId: body.parentId ?? null,
+          ...(typeof body.x === "number" && typeof body.y === "number"
+            ? {
+                x: body.x,
+                y: body.y,
+                pageWidth: body.pageWidth,
+                pageHeight: body.pageHeight,
+                anchorNodeId: body.anchorNodeId ?? null,
+                contextSnippet: body.contextSnippet ?? null,
+                kind: body.kind === "area" ? "area" : "point",
+                ...(Array.isArray(body.rects) ? { rects: body.rects } : {}),
+              }
+            : {}),
+        };
+        file.comments.push(entry);
+        await writeComments(file);
+        deliverChannel(entry);
+        return new Response(JSON.stringify(entry), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url.pathname.startsWith("/comment/") && req.method === "DELETE") {
+        const id = url.pathname.slice("/comment/".length);
+        const file = await readJson<{ comments: Comment[] }>(COMMENTS_PATH);
+        const before = file.comments.length;
+        file.comments = file.comments.filter((c) => c.id !== id);
+        if (file.comments.length === before) {
+          return new Response(JSON.stringify({ error: "not found" }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        // CRITICAL: do NOT call deliverChannel on delete. Only adds notify
+        // Claude — otherwise it wastes turns answering removed comments.
+        await writeComments(file);
+        return new Response(null, { status: 204 });
+      }
+
+      return new Response("not found", { status: 404 });
+    },
+    websocket: {
+      open: (ws) => { clients.add(ws); },
+      close: (ws) => { clients.delete(ws); },
+      message: () => {},
+    },
+  });
+  process.stderr.write(`__PLUGIN_NAME__: http://localhost:${PORT}\n`);
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/EADDRINUSE|in use|address already/i.test(msg)) {
+    process.stderr.write(
+      `__PLUGIN_NAME__: port ${PORT} already in use — running stdio-only. Tool calls will still update the shared state files.\n`
+    );
+    // Without Bun.serve holding the event loop open, the script would exit
+    // after this catch and Claude would see "Connection closed". Pin stdin
+    // open so MCP requests can keep flowing.
+    process.stdin.resume();
+  } else {
+    throw err;
+  }
+}

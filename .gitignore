@@ -1,0 +1,5 @@
+# Generated when an artifact is scaffolded from these templates
+node_modules/
+bun.lock
+*.log
+.DS_Store
