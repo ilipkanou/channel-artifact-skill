@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# start.sh — one-command launcher for the __PLUGIN_NAME__ channel artifact.
+#
+#   Open a fresh terminal and run:   bash start.sh
+#
+# It does, in order:
+#   1. Finds the project root (the dir with a .mcp.json that registers __PLUGIN_NAME__),
+#      generating one if a recreated worktree/checkout doesn't have it yet.
+#   2. Pre-flight: checks bun + claude, frees any stale server on the port.
+#   3. Launches Claude Code with the development channel + skip-permissions.
+#   4. Auto-opens the artifact URL the moment the server binds.
+#   5. Frees the port again on exit (belt-and-suspenders teardown).
+#
+# "Confirm MCP" is one keystroke inside the session: run /mcp — a script can't
+# type into Claude's REPL, but the browser auto-opening IS the server-connected signal.
+set -uo pipefail
+
+PORT=__PORT__                               # matches __PLUGIN_NAME_UPPER___PORT / server.ts default
+URL="http://localhost:${PORT}"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
+die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# --- 1. Resolve the project root (where Claude must be launched from) -----------------
+# Discovery: nearest *ancestor* with a .mcp.json that names __PLUGIN_NAME__.
+# Start one level up — the plugin dir has its own (template) .mcp.json that uses
+# ${CLAUDE_PLUGIN_ROOT}, which only resolves under plugin-loading, not as the
+# launch-root registration. Claude must be launched from an ancestor root.
+ROOT=""
+d="$(dirname "$PLUGIN_DIR")"
+while [ "$d" != "/" ]; do
+  if [ -f "$d/.mcp.json" ] && grep -q '"__PLUGIN_NAME__"' "$d/.mcp.json"; then ROOT="$d"; break; fi
+  d="$(dirname "$d")"
+done
+# Fallback: no registration found (e.g. a freshly re-created worktree — .mcp.json is
+# commonly gitignored, so it doesn't travel). Generate one at the git root, without clobbering.
+if [ -z "$ROOT" ]; then
+  ROOT="$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "No .mcp.json with '__PLUGIN_NAME__' found, and not inside a git repo — can't locate the project root."
+  if [ -f "$ROOT/.mcp.json" ]; then
+    die "A .mcp.json exists at $ROOT but has no '__PLUGIN_NAME__' entry. Add this server to its mcpServers:
+       \"__PLUGIN_NAME__\": { \"command\": \"bun\", \"args\": [\"run\", \"--cwd\", \"$PLUGIN_DIR\", \"--silent\", \"start\"] }"
+  fi
+  warn "No root .mcp.json — generating one at $ROOT"
+  cat > "$ROOT/.mcp.json" <<JSON
+{
+  "mcpServers": {
+    "__PLUGIN_NAME__": {
+      "command": "bun",
+      "args": ["run", "--cwd", "$PLUGIN_DIR", "--silent", "start"]
+    }
+  }
+}
+JSON
+fi
+
+# --- 2. Pre-flight --------------------------------------------------------------------
+command -v bun    >/dev/null 2>&1 || die "bun not found — install:  brew install oven-sh/bun/bun"
+command -v claude >/dev/null 2>&1 || die "claude (Claude Code CLI) not found in PATH."
+
+is_up() {
+  if command -v curl >/dev/null 2>&1; then curl -sf "$URL/data.json" >/dev/null 2>&1
+  else lsof -ti:"$PORT" >/dev/null 2>&1; fi
+}
+
+# Free a stale/orphan server still holding the port from a previous run.
+if lsof -ti:"$PORT" >/dev/null 2>&1; then
+  warn "Port $PORT is already held — freeing it (stale server)…"
+  bash "$PLUGIN_DIR/stop.sh" --port "$PORT" >/dev/null 2>&1 \
+    || { kill $(lsof -ti:"$PORT") 2>/dev/null; true; }
+fi
+
+# --- 3/5. Teardown on exit (normal end, Ctrl-C, kill) — guarantees the port is freed --
+WAITER_PID=""
+cleanup() {
+  [ -n "$WAITER_PID" ] && kill "$WAITER_PID" 2>/dev/null
+  bash "$PLUGIN_DIR/stop.sh" --port "$PORT" >/dev/null 2>&1
+  return 0
+}
+trap cleanup EXIT INT TERM
+
+# --- 4. Auto-open the URL once the server binds (it boots only after Claude starts it) -
+opener() {
+  for _ in $(seq 1 90); do                  # ~45s budget
+    if is_up; then
+      command -v open >/dev/null 2>&1 && open "$URL"
+      printf '\033[1;32m✔ Artifact live → %s\033[0m\n' "$URL"
+      return
+    fi
+    sleep 0.5
+  done
+  warn "Server didn't answer on $PORT within ~45s. In the session run /mcp to check '__PLUGIN_NAME__', then open $URL manually."
+}
+opener & WAITER_PID=$!
+
+# --- Launch ---------------------------------------------------------------------------
+say "Project root : $ROOT"
+say "Artifact     : $PLUGIN_DIR"
+echo "   → When the session opens, run /mcp — expect:  __PLUGIN_NAME__ · ✔ connected (mark_addressed, update_node, update_data, post_message)"
+echo "   → Browser opens automatically once the server binds ($URL)."
+echo "   → Done? Click 'Done / Shut down' in the UI or just end the session — the port is freed on exit."
+echo
+cd "$ROOT" || die "cannot cd to $ROOT"
+# Drop --dangerously-skip-permissions if you'd rather approve each tool call.
+claude --dangerously-load-development-channels server:__PLUGIN_NAME__ --dangerously-skip-permissions

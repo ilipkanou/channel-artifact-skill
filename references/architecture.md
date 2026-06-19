@@ -2,6 +2,28 @@
 
 Deeper notes on *why* the pattern is shaped this way, and where it's reasonable to deviate.
 
+## Plumbing diagram
+
+```
+[Browser]  ←──── HTTP + WebSocket ────→  [Bun server]  ←─── stdio MCP ───→  [Claude Code session]
+   ↑                                          │                                     │
+   │                                          │ notifications/claude/channel        │
+   │                                          ├─── (push: comment + meta) ─────────→│
+   │                                          │                                     │
+   │                                          │←─── tool calls (mark_addressed,     │
+   │                                          │     update_node, update_data) ──────│
+   │                                          ↓
+   │                                  [data.json + comments.json on disk]
+   │                                          │
+   └────── live refresh via WebSocket ────────┘
+```
+
+This plumbing is domain-agnostic. The only parts that change per artifact:
+1. **`data.json` shape** — whatever structure your viz needs.
+2. **The `render` function in `index.html`** — how to paint `DATA` into the DOM.
+3. **Which tools the MCP server exposes** — `mark_addressed` is always there; `update_node` / `update_data` are optional.
+4. **The MCP server's `instructions` field** — tell Claude how to interpret the specific comments.
+
 ## Why a channel and not polling
 
 Two earlier designs don't work:
@@ -72,6 +94,7 @@ Claude's reply goes through tool calls (`mark_addressed`, `update_node`, `update
 | `index.html` | The artifact | Single file, no build step, ESM imports for d3 |
 | `data.json` | Viz state | Tool-mutated; WebSocket fires on every write |
 | `comments.json` | Pin threads | Same |
+| `chat.json` | Claude<->user chat | Same — node-less messages; `post_message` writes here, WS broadcasts |
 
 ## The cognitive model for the user
 
@@ -83,3 +106,43 @@ The user's mental model should be: "I click → Claude thinks → the page updat
 - No "refresh" button — WebSocket + polling handles updates invisibly
 
 If you break that, you break the artifact's value.
+
+## Lifecycle & teardown
+
+Claude starts the server (it spawns the MCP subprocess via `.mcp.json`), and the
+channel closes when that process exits. So teardown == the process exiting cleanly
+and freeing the port. Five triggers reach one idempotent `shutdown()`:
+
+1. **stdin close** — Claude closes the subprocess's stdin when the session ends. The
+   MCP stdio transport already flows stdin, so `process.stdin.on("end"/"close")` fires
+   on the *real pipe* close. (A named FIFO does NOT reproduce this in Bun — the tests
+   drive a real `Bun.spawn` pipe.) Primary automatic path.
+2. **SIGINT / SIGTERM** — Ctrl-C, or Claude/OS terminating the subprocess.
+3. **POST /shutdown** — the artifact's "Done / Shut down" button.
+4. **SessionEnd hook** (`hooks.json`) — harness backstop that runs `stop.sh`.
+5. **`stop.sh`** — manual: by pidfile, or `--port N` to reclaim a `-9` orphan.
+
+`shutdown()` broadcasts `server-stopping` (open tabs show a stopped banner), calls
+`httpServer.stop(true)` (force-closes HTTP + WS), removes the pidfile *if it owns it*,
+and exits.
+
+### Why a PID-file (`.runtime.json`), not a blind port kill
+
+The server writes `{ pid, port, startedAt }` on bind and deletes it on clean exit.
+Teardown targets *that pid*, never "whatever is on the port". This preserves the
+multi-session design: a second session that found the port taken runs stdio-only and
+never bound the port, so it has no pidfile claim and is never killed by a sibling's
+teardown (`ownsRuntime` guards the delete). On startup, a stale pidfile whose pid is
+**dead** is reclaimed; a **live** pid is left alone (real sibling).
+
+### Belt and suspenders
+
+The in-server stdin handler is the primary automatic path; signals cover
+Ctrl-C/terminate; the SessionEnd hook is the harness-enforced backstop; `stop.sh` is
+the manual escape hatch. The one runtime unknown is whether a plugin-declared
+SessionEnd hook fires under `--dangerously-load-development-channels` — verify on a
+real session; if it does not, generate a project `.claude/settings.json` SessionEnd
+entry instead. The stdin handler and signals cover normal session end *if Claude
+closes stdin or signals on exit* (the common case); if it instead orphans the
+subprocess without either, the hook is the sole guard — so confirm on a real session
+which path actually fires (the `shutting down (<reason>)` log line tells you).

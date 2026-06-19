@@ -34,11 +34,16 @@ The UI saved the comment but the channel notification didn't reach any session. 
 
 ### Orphan bun stays after Claude exits
 
-Claude's spawned bun can outlive the session if the MCP SDK doesn't cleanly close stdin. Always clean up before relaunching:
+Teardown is now automatic: the server exits on stdin close (session end), on
+SIGINT/SIGTERM, on the UI "Done" button (`POST /shutdown`), and via the SessionEnd
+hook (`hooks.json` → `stop.sh`). It writes `.runtime.json` on bind and removes it on
+exit. If something still lingers (e.g. a hard `kill -9` of the terminal), reclaim the
+port with the artifact's own script — it targets the pidfile, then the port:
 ```bash
-kill $(lsof -ti:<port>) 2>/dev/null
+bash stop.sh --port <port>     # or: bun run stop  (when .runtime.json is intact)
 ```
-If Bun.serve dies (port taken) but stdio is kept alive via `process.stdin.resume()`, the process can hang indefinitely. That's intentional for shared-state scenarios, but confusing when the first owner exits — the backup takes over silently.
+A second session that finds the port taken still runs stdio-only by design; it does
+not bind the port and is never killed by another session's teardown.
 
 ## UI rendering
 

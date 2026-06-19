@@ -14,6 +14,8 @@ You open a localhost page (a dashboard, outline, kanban, graph, anything), drop 
 
 - **Point + area pins** — click for a point pin; **select text** for an area pin that highlights the range and sends the *exact quote* to Claude.
 - **Comment threads** — follow up on any pin; replies thread under the original and continue the conversation with Claude.
+- **Two-way chat** — a docked chat panel where Claude reaches you proactively (questions, heads-ups, confirmations) via `post_message`, not only under a pin.
+- **Save & batch-submit pins** — park pins as drafts while you review, then send them individually or all at once with **Submit all**.
 - **Markdown-rendered replies**, a **pin sidebar** (numbered status badges that match the on-page markers, thread counts, **Download JSON**), and graceful render-error handling.
 - **Generic `update_node`** — Claude patches any node in `data.json` by `id`, no per-shape wiring.
 
@@ -39,10 +41,14 @@ Open the `http://localhost:<port>` it prints, toggle **Pin mode**, and start com
 ## Layout
 
 ```text
-SKILL.md                     # how Claude scaffolds an artifact
-assets/*.template            # server.ts, index.html, package.json, .mcp.json, data.json, comments.json
-references/architecture.md   # why the pattern is shaped this way
-references/troubleshooting.md # every gotcha, with one-line fixes
+SKILL.md                      # how Claude scaffolds an artifact
+assets/*.template             # server.ts, index.html, package.json, .mcp.json, data.json,
+                              #   comments.json, chat.json, plugin.json, hooks.json, start.sh, stop.sh
+references/architecture.md    # why the pattern is shaped this way
+references/building-the-viz.md # library-by-shape picks + three worked walk-throughs
+references/troubleshooting.md  # every gotcha, with one-line fixes
+test/lifecycle.test.ts        # bun test suite — real scaffold + lifecycle + chat/save-submit checks
+scripts/setup.sh              # checks for Bun and installs it if missing
 ```
 
 ## Origin

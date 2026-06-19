@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Teardown for the __PLUGIN_NAME__ channel artifact.
+#   bash stop.sh             -> read .runtime.json, kill that pid, verify port free
+#   bash stop.sh --port N    -> force-free port N even with no/stale pidfile (-9 orphan recovery)
+# Also invoked by the SessionEnd hook as a backstop.
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="$DIR/.runtime.json"
+PORT=""
+PID=""
+
+if [ "${1:-}" = "--port" ] && [ -n "${2:-}" ]; then
+  PORT="$2"
+elif [ -f "$RUNTIME" ]; then
+  PID="$(grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' "$RUNTIME" | grep -o '[0-9]*$')"
+  PORT="$(grep -o '"port"[[:space:]]*:[[:space:]]*[0-9]*' "$RUNTIME" | grep -o '[0-9]*$')"
+fi
+
+kill_pid() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null
+  for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.1; done
+  kill -KILL "$pid" 2>/dev/null
+}
+
+[ -n "$PID" ] && kill_pid "$PID"
+
+# Reclaim the port if anything still holds it (covers -9 orphans / unknown pidfile).
+if [ -n "$PORT" ]; then
+  for pid in $(lsof -ti:"$PORT" 2>/dev/null); do kill_pid "$pid"; done
+fi
+
+rm -f "$RUNTIME"
+
+if [ -n "$PORT" ] && lsof -ti:"$PORT" >/dev/null 2>&1; then
+  echo "stop.sh: port $PORT STILL held — manual check needed" >&2
+  exit 1
+fi
+echo "stop.sh: __PLUGIN_NAME__ stopped${PORT:+ (port $PORT free)}"

@@ -42,6 +42,7 @@
   .floating-pin .marker svg { position: absolute; top: 0; left: 0; width: 26px; height: 32px; }
   .floating-pin.pending svg path { fill: #f59e0b; }
   .floating-pin.addressed svg path { fill: #16a34a; }
+  .floating-pin.saved svg path { fill: #64748b; }
   .floating-pin .marker span { position: relative; z-index: 1; line-height: 1; margin-top: 4px; }
   .floating-pin:hover { transform: translate(-50%, -100%) scale(1.1); }
   .floating-pin.active svg path { stroke: var(--text); stroke-width: 1.5; }
@@ -54,6 +55,7 @@
   .anchor-pin { position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent2); color: #fff; font-size: 10px; font-weight: 700; display: none; align-items: center; justify-content: center; box-shadow: var(--shadow); z-index: 2; }
   .anchor-pin.show { display: inline-flex; }
   .anchor-pin.addressed { background: var(--green); }
+  .anchor-pin.saved { background: #64748b; }
 
   /* Comment panel — opens next to click */
   #panel { position: absolute; width: 380px; max-height: 60vh; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 50px rgba(15,23,42,0.18); display: none; flex-direction: column; overflow: hidden; z-index: 70; }
@@ -68,12 +70,17 @@
   #panel button.submit { margin-top: 8px; background: var(--accent); color: #fff; border: none; padding: 9px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px; }
   #panel button.submit:hover { background: #b45309; }
   #panel button.submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .submit-row { display: flex; gap: 8px; }
+  #panel button.submit.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  #panel button.submit.secondary:hover { background: #e7ebf0; border-color: #64748b; }
+  #submit-draft { width: 100%; }
   .comments-list { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
   .comment { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
   .comment .head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
   .comment .status { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
   .comment .status.pending { background: rgba(245, 158, 11, 0.15); color: #b45309; }
   .comment .status.addressed { background: rgba(22, 163, 74, 0.15); color: var(--green); }
+  .comment .status.saved { background: rgba(100,116,139,0.15); color: #475569; }
   .comment .text { font-size: 13px; color: var(--text); white-space: pre-wrap; }
   .comment .response { margin-top: 8px; padding: 8px 10px; background: #fff; border-left: 3px solid var(--green); border-radius: 4px; font-size: 12px; color: var(--text); white-space: pre-wrap; }
   .comment .response::before { content: "Claude · "; color: var(--green); font-weight: 700; }
@@ -105,6 +112,10 @@
   #pin-sidebar .sb-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
   #pin-sidebar .dl-btn { background: var(--panel2); border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; font: inherit; font-size: 11px; font-weight: 600; color: var(--text); cursor: pointer; white-space: nowrap; }
   #pin-sidebar .dl-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .sb-actions { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
+  #submit-all { width: 100%; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+  #submit-all:hover { background: #b45309; }
+  #submit-all:disabled { background: var(--panel2); color: var(--muted); cursor: not-allowed; }
   #pin-list { overflow-y: auto; flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
   .sb-empty { font-size: 12px; color: var(--muted); padding: 22px 14px; text-align: center; line-height: 1.55; }
   .pin-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 10px 11px; cursor: pointer; font: inherit; }
@@ -113,6 +124,7 @@
   .pin-item .pi-num { width: 20px; height: 20px; border-radius: 50%; margin-top: 1px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; }
   .pin-item.pending .pi-num { background: var(--accent2); }
   .pin-item.addressed .pi-num { background: var(--green); }
+  .pin-item.saved .pi-num { background: #64748b; }
   .pi-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
   .pi-text { font-size: 12.5px; color: var(--text); line-height: 1.35; }
   .pi-meta { font-size: 10.5px; color: var(--muted); }
@@ -122,6 +134,38 @@
   .pin-hl { position: absolute; pointer-events: none; border-radius: 2px; }
   .pin-hl.pending { background: rgba(245,158,11,0.22); box-shadow: 0 0 0 1px rgba(245,158,11,0.45); }
   .pin-hl.addressed { background: rgba(22,163,74,0.18); box-shadow: 0 0 0 1px rgba(22,163,74,0.4); }
+  .pin-hl.saved { background: rgba(100,116,139,0.18); box-shadow: 0 0 0 1px rgba(100,116,139,0.4); }
+
+  /* ---- Chat panel (Claude <-> user, not tied to a pin) ---- */
+  #chat-dock { position: fixed; left: 18px; bottom: 18px; width: 340px; z-index: 80; }
+  #chat-dock .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--text); color: #fff; border-radius: 12px; padding: 10px 14px; cursor: pointer; box-shadow: 0 8px 24px rgba(15,23,42,0.18); user-select: none; }
+  #chat-dock .ch-title { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  #chat-dock .ch-title::before { content: "💬"; }
+  #chat-dock .chat-unread { background: var(--accent); color: #fff; border-radius: 999px; min-width: 18px; height: 18px; padding: 0 5px; font-size: 11px; font-weight: 700; display: none; align-items: center; justify-content: center; }
+  #chat-dock .chat-unread.show { display: inline-flex; }
+  #chat-dock .chat-toggle { font-size: 12px; opacity: 0.85; }
+  #chat-dock .chat-body { display: none; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 18px 40px rgba(15,23,42,0.18); overflow: hidden; }
+  #chat-dock.open .chat-body { display: flex; }
+  #chat-dock.open .chat-head { border-radius: 12px 12px 0 0; }
+  #chat-messages { max-height: 46vh; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .chat-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 18px 10px; line-height: 1.5; }
+  .chat-msg { max-width: 85%; padding: 8px 11px; border-radius: 12px; font-size: 12.5px; line-height: 1.45; }
+  .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+  .chat-msg.claude { align-self: flex-start; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .chat-msg.claude p { margin: 0 0 6px; } .chat-msg.claude p:last-child { margin-bottom: 0; }
+  .chat-msg.claude ul, .chat-msg.claude ol { margin: 4px 0; padding-left: 18px; }
+  .chat-msg.claude code { background: #fff; padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; }
+  .chat-msg.claude pre { background: #fff; padding: 8px 10px; border-radius: 6px; overflow-x: auto; margin: 6px 0; }
+  .chat-msg.claude pre code { background: none; padding: 0; }
+  .chat-msg.claude a { color: var(--accent); }
+  #chat-input-row { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel2); }
+  #chat-input { flex: 1; resize: none; min-height: 38px; max-height: 120px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 12.5px; color: var(--text); }
+  #chat-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+  #chat-send { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-weight: 600; cursor: pointer; font-size: 12.5px; }
+  #chat-send:hover { background: #b45309; }
+  #chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+  @keyframes chat-bump { 0%,100% { transform: translateY(0); } 30% { transform: translateY(-4px); } }
+  #chat-dock.bump .chat-head { animation: chat-bump 0.4s ease; }
 </style>
 </head>
 <body>
@@ -133,6 +177,7 @@
   </div>
   <div style="display:flex;gap:12px;align-items:center;">
     <button class="pin-toggle" id="pin-toggle">Pin mode: off</button>
+    <button id="shutdown-btn" title="Stop the server and close the channel" style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font:inherit;font-size:12px;font-weight:600;color:var(--text);cursor:pointer;box-shadow:var(--shadow);">Done / Shut down</button>
   </div>
 </header>
 
@@ -153,7 +198,11 @@
   </header>
   <div class="body">
     <textarea id="comment-text" placeholder="Leave a pinned comment. It pushes to Claude over the channel instantly — Claude runs whatever queries it needs and updates the artifact in place. Your comment stays pinned with a status."></textarea>
-    <button class="submit" id="comment-submit">Pin comment</button>
+    <div class="submit-row">
+      <button class="submit" id="comment-submit">Submit to Claude</button>
+      <button class="submit secondary" id="comment-save">Save pin</button>
+    </div>
+    <button class="submit submit-draft" id="submit-draft" style="display:none;">Submit this pin to Claude</button>
     <div class="comments-list" id="comments-list"></div>
   </div>
 </aside>
@@ -163,7 +212,24 @@
     <h2>Pins · <span id="sb-count">0</span></h2>
     <button class="dl-btn" id="dl-json" title="Download all comments as JSON">Download JSON</button>
   </div>
+  <div class="sb-actions">
+    <button id="submit-all" disabled>Submit all (0)</button>
+  </div>
   <div id="pin-list"></div>
+</aside>
+
+<aside id="chat-dock">
+  <div class="chat-head" id="chat-head">
+    <span class="ch-title">Chat with Claude <span class="chat-unread" id="chat-unread">0</span></span>
+    <span class="chat-toggle" id="chat-toggle">▴</span>
+  </div>
+  <div class="chat-body">
+    <div id="chat-messages"></div>
+    <div id="chat-input-row">
+      <textarea id="chat-input" placeholder="Message Claude… (not tied to a pin)"></textarea>
+      <button id="chat-send">Send</button>
+    </div>
+  </div>
 </aside>
 
 <div class="toast" id="toast">Comment pinned.</div>
@@ -174,6 +240,9 @@ let COMMENTS = [];
 let activePin = null;     // { id, nodeId, nodeLabel, anchorNodeId } when a pin thread is open
 let pendingPin = null;    // { x, y, anchorNodeId, contextSnippet, label } for a new pin
 let pinMode = false;
+let CHAT = [];
+let chatOpen = false;
+let chatSeen = 0; // count of Claude messages the user has already seen
 
 // ---- Artifact renderer: paints DATA (data.json) into #content. ----
 // REPLACE THIS with whatever your artifact should show. The only contract:
@@ -285,6 +354,8 @@ function rootPins() {
 }
 
 function threadStatus(rootId) {
+  const root = COMMENTS.find((c) => c.id === rootId);
+  if (root && root.status === "saved") return "saved";
   const t = threadFor(rootId);
   return t.length && t.every((c) => c.status === "addressed") ? "addressed" : "pending";
 }
@@ -313,6 +384,10 @@ function renderSidebar() {
   const roots = rootPins();
   const nums = pinNumbers();
   document.getElementById("sb-count").textContent = String(roots.length);
+  const savedCount = roots.filter((r) => r.status === "saved").length;
+  const submitAllBtn = document.getElementById("submit-all");
+  submitAllBtn.textContent = `Submit all (${savedCount})`;
+  submitAllBtn.disabled = savedCount === 0;
   if (!roots.length) {
     list.innerHTML = `<div class="sb-empty">No pins yet. Turn on Pin mode and click the outline to add one.</div>`;
     return;
@@ -421,6 +496,11 @@ function positionPanelNear(x, y) {
 }
 
 function openPinDraftPanel(p) {
+  document.getElementById("comment-text").style.display = "";
+  document.getElementById("comment-submit").textContent = "Submit to Claude";
+  document.getElementById("comment-save").style.display = "";
+  document.querySelector(".submit-row").style.display = "flex";
+  document.getElementById("submit-draft").style.display = "none";
   activePin = null;
   pendingPin = p;
   document.getElementById("panel-title").textContent = p.kind === "area" ? "New note on selection" : "New pin";
@@ -455,6 +535,12 @@ function refreshOpenThread() {
 function openPinPanel(pinId) {
   const root = COMMENTS.find((x) => x.id === pinId);
   if (!root) return;
+  const isDraft = root.status === "saved";
+  document.getElementById("comment-text").style.display = isDraft ? "none" : "";
+  document.querySelector(".submit-row").style.display = isDraft ? "none" : "flex";
+  document.getElementById("comment-save").style.display = "none";
+  document.getElementById("comment-submit").textContent = "Submit reply";
+  document.getElementById("submit-draft").style.display = isDraft ? "block" : "none";
   activePin = { id: pinId, nodeId: root.nodeId, nodeLabel: root.nodeLabel, anchorNodeId: root.anchorNodeId ?? null };
   pendingPin = null;
   const thread = threadFor(pinId);
@@ -508,55 +594,84 @@ function closePanel() {
 
 document.getElementById("panel-close").onclick = closePanel;
 
-document.getElementById("comment-submit").onclick = async () => {
+async function postPin(deliver) {
   const text = document.getElementById("comment-text").value.trim();
-  if (!text) return;
-  const btn = document.getElementById("comment-submit");
-  btn.disabled = true;
+  if (!text || !pendingPin) return;
+  const submitBtn = document.getElementById("comment-submit");
+  const saveBtn = document.getElementById("comment-save");
+  submitBtn.disabled = true; saveBtn.disabled = true;
   try {
-    let payload;
-    if (pendingPin) {
-      payload = {
-        nodeId: pendingPin.anchorNodeId || "freeform",
-        nodeLabel: pendingPin.label || pendingPin.anchorNodeId || "Freeform pin",
-        text,
-        x: pendingPin.x,
-        y: pendingPin.y,
-        pageWidth: document.documentElement.scrollWidth,
-        pageHeight: document.documentElement.scrollHeight,
-        anchorNodeId: pendingPin.anchorNodeId,
-        contextSnippet: pendingPin.contextSnippet,
-        kind: pendingPin.kind || "point",
-        ...(pendingPin.rects ? { rects: pendingPin.rects } : {}),
-      };
-    } else if (activePin) {
-      // Follow-up on an existing pin: same anchor, no x/y (no new marker),
-      // parentId links it into the thread.
-      payload = {
-        nodeId: activePin.nodeId || "freeform",
-        nodeLabel: activePin.nodeLabel || "Follow-up",
-        text,
-        parentId: activePin.id,
-        anchorNodeId: activePin.anchorNodeId,
-      };
-    } else {
-      return;
-    }
+    const payload = {
+      nodeId: pendingPin.anchorNodeId || "freeform",
+      nodeLabel: pendingPin.label || pendingPin.anchorNodeId || "Freeform pin",
+      text,
+      submit: deliver,
+      x: pendingPin.x,
+      y: pendingPin.y,
+      pageWidth: document.documentElement.scrollWidth,
+      pageHeight: document.documentElement.scrollHeight,
+      anchorNodeId: pendingPin.anchorNodeId,
+      contextSnippet: pendingPin.contextSnippet,
+      kind: pendingPin.kind || "point",
+      ...(pendingPin.rects ? { rects: pendingPin.rects } : {}),
+    };
     await fetch("/comment", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
     document.getElementById("comment-text").value = "";
-    showToast();
-    const reopenId = activePin ? activePin.id : null;
+    showToast(deliver ? "Pinned — sent to Claude." : "Pin saved as draft.");
     pendingPin = null;
+    closePanel();
     await load();
-    if (reopenId) openPinPanel(reopenId);
-  } finally {
-    btn.disabled = false;
-  }
+  } finally { submitBtn.disabled = false; saveBtn.disabled = false; }
+}
+
+async function postReply() {
+  const text = document.getElementById("comment-text").value.trim();
+  if (!text || !activePin) return;
+  const btn = document.getElementById("comment-submit");
+  btn.disabled = true;
+  try {
+    await fetch("/comment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        nodeId: activePin.nodeId || "freeform",
+        nodeLabel: activePin.nodeLabel || "Follow-up",
+        text,
+        parentId: activePin.id,
+        anchorNodeId: activePin.anchorNodeId,
+      }),
+    });
+    document.getElementById("comment-text").value = "";
+    showToast();
+    const reopenId = activePin.id;
+    await load();
+    openPinPanel(reopenId);
+  } finally { btn.disabled = false; }
+}
+
+async function submitPins(ids) {
+  await fetch("/submit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(ids ? { ids } : {}),
+  });
+  showToast("Sent to Claude.");
+  const reopenId = activePin ? activePin.id : null;
+  await load();
+  if (reopenId) openPinPanel(reopenId);
+}
+
+document.getElementById("comment-submit").onclick = () => {
+  if (pendingPin) postPin(true);
+  else if (activePin) postReply();
 };
+document.getElementById("comment-save").onclick = () => { if (pendingPin) postPin(false); };
+document.getElementById("submit-draft").onclick = () => { if (activePin) submitPins([activePin.id]); };
+document.getElementById("submit-all").onclick = () => submitPins();
 
 const pinToggleBtn = document.getElementById("pin-toggle");
 pinToggleBtn.onclick = () => {
@@ -622,11 +737,101 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-function showToast() {
+function showToast(msg) {
   const t = document.getElementById("toast");
+  t.textContent = msg || "Comment pinned.";
   t.classList.add("show");
   setTimeout(() => t.classList.remove("show"), 2400);
 }
+
+// ---- Chat panel: a node-less conversation surface. The user types here (POST
+// /chat → channel event with chat_id="chat", no node_id); Claude posts back via
+// the post_message tool (→ chat.json → "chat-updated" broadcast). It exists so
+// Claude can reach the user proactively instead of narrating to a terminal the
+// user isn't looking at.
+async function loadChat() {
+  try {
+    const r = await fetch("/chat.json", { cache: "no-store" });
+    const j = await r.json();
+    CHAT = Array.isArray(j.messages) ? j.messages : [];
+  } catch { CHAT = []; }
+  renderChat();
+}
+
+function claudeCount() { return CHAT.filter((m) => m.role === "claude").length; }
+
+function renderChat() {
+  const box = document.getElementById("chat-messages");
+  if (!CHAT.length) {
+    box.innerHTML = `<div class="chat-empty">No messages yet. Claude posts here when it needs to reach you — a question, a heads-up, a confirmation. Message back any time.</div>`;
+  } else {
+    box.innerHTML = CHAT.map((m) =>
+      `<div class="chat-msg ${m.role === "claude" ? "claude" : "user"}">${
+        m.role === "claude" ? renderMarkdown(m.text) : escapeHtml(m.text)
+      }</div>`
+    ).join("");
+    box.scrollTop = box.scrollHeight;
+  }
+  updateChatUnread();
+}
+
+function updateChatUnread() {
+  const badge = document.getElementById("chat-unread");
+  if (chatOpen) { chatSeen = claudeCount(); badge.classList.remove("show"); badge.textContent = "0"; return; }
+  const unread = Math.max(0, claudeCount() - chatSeen);
+  if (unread > 0) { badge.textContent = String(unread); badge.classList.add("show"); }
+  else badge.classList.remove("show");
+}
+
+function setChatOpen(open) {
+  chatOpen = open;
+  document.getElementById("chat-dock").classList.toggle("open", open);
+  document.getElementById("chat-toggle").textContent = open ? "▾" : "▴";
+  if (open) {
+    chatSeen = claudeCount();
+    updateChatUnread();
+    const box = document.getElementById("chat-messages");
+    box.scrollTop = box.scrollHeight;
+    document.getElementById("chat-input").focus();
+  }
+}
+
+// Claude posted while we weren't looking → bump + auto-open so it can't be missed
+// (the whole reason the chat exists). A user's own message never auto-opens.
+function onChatPushed() {
+  const before = chatSeen;
+  loadChat().then(() => {
+    if (!chatOpen && claudeCount() > before) {
+      const dock = document.getElementById("chat-dock");
+      dock.classList.add("bump");
+      setTimeout(() => dock.classList.remove("bump"), 400);
+      setChatOpen(true);
+    }
+  });
+}
+
+async function sendChat() {
+  const ta = document.getElementById("chat-input");
+  const text = ta.value.trim();
+  if (!text) return;
+  const btn = document.getElementById("chat-send");
+  btn.disabled = true;
+  try {
+    await fetch("/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    ta.value = "";
+    await loadChat();
+  } finally { btn.disabled = false; }
+}
+
+document.getElementById("chat-head").onclick = () => setChatOpen(!chatOpen);
+document.getElementById("chat-send").onclick = sendChat;
+document.getElementById("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
 
 // Live updates over WebSocket (with reconnect) + polling safety net
 function connectWs() {
@@ -635,7 +840,9 @@ function connectWs() {
     ws.onmessage = (e) => {
       try {
         const m = JSON.parse(e.data);
+        if (m.type === "server-stopping") { showStoppedBanner(); return; }
         if (m.type === "data-updated" || m.type === "comments-updated") load();
+        if (m.type === "chat-updated") onChatPushed();
       } catch {}
     };
     ws.onclose = () => setTimeout(connectWs, 2000);
@@ -644,8 +851,21 @@ function connectWs() {
   }
 }
 
+function showStoppedBanner() {
+  document.body.innerHTML =
+    '<div style="max-width:560px;margin:18vh auto;text-align:center;font:16px system-ui;color:var(--text)">' +
+    '<h2>Server stopped</h2>' +
+    '<p>The channel is closed and the port is freed. Safe to close this tab.</p></div>';
+}
+document.getElementById("shutdown-btn").addEventListener("click", async () => {
+  if (!confirm("Stop the server and close the channel? The artifact will go offline.")) return;
+  try { await fetch("/shutdown", { method: "POST" }); } catch {}
+  showStoppedBanner();
+});
+
 load();
-setInterval(load, 30_000);
+loadChat();
+setInterval(() => { load(); loadChat(); }, 30_000);
 connectWs();
 </script>
 </body>

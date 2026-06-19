@@ -17,6 +17,7 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFile, writeFile } from "node:fs/promises";
+import { unlinkSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ServerWebSocket } from "bun";
@@ -24,8 +25,10 @@ import type { ServerWebSocket } from "bun";
 const DIR = import.meta.dir;
 const PORT = Number(process.env.__PLUGIN_NAME_UPPER___PORT ?? __PORT__);
 const COMMENTS_PATH = join(DIR, "comments.json");
+const CHAT_PATH = join(DIR, "chat.json");
 const DATA_PATH = join(DIR, "data.json");
 const HTML_PATH = join(DIR, "index.html");
+const RUNTIME_PATH = join(DIR, ".runtime.json");
 
 type Comment = {
   id: string;
@@ -33,7 +36,7 @@ type Comment = {
   nodeLabel: string;
   text: string;
   createdAt: string;
-  status: "pending" | "addressed";
+  status: "saved" | "pending" | "addressed";
   response: string | null;
   addressedAt: string | null;
   // Optional positional fields (set when dropped via Pin Mode)
@@ -48,6 +51,13 @@ type Comment = {
   // "point" (single click) or "area" (text selection). Area pins carry rects + an exact quote in contextSnippet.
   kind?: "point" | "area";
   rects?: Array<{ x: number; y: number; w: number; h: number }>;
+};
+
+type ChatMessage = {
+  id: string;
+  role: "claude" | "user";
+  text: string;
+  createdAt: string;
 };
 
 const clients = new Set<ServerWebSocket<unknown>>();
@@ -71,6 +81,19 @@ async function writeData(data: unknown) {
   broadcast("data-updated");
 }
 
+async function readChat(): Promise<{ messages: ChatMessage[] }> {
+  try {
+    return await readJson<{ messages: ChatMessage[] }>(CHAT_PATH);
+  } catch {
+    return { messages: [] };
+  }
+}
+
+async function writeChat(file: { messages: ChatMessage[] }) {
+  await writeFile(CHAT_PATH, JSON.stringify(file, null, 2));
+  broadcast("chat-updated");
+}
+
 // --- MCP server (stdio) ---
 const mcp = new Server(
   { name: "__PLUGIN_NAME__", version: "0.1.0" },
@@ -90,6 +113,8 @@ When a comment arrives:
 If the channel meta has parent_id, this is a FOLLOW-UP on an earlier pinned comment — read comments.json for the thread (the comment whose id === parent_id, plus any earlier replies sharing that parent_id) and continue it, making further edits if asked.
 
 If the channel meta has comment_type="area", the context_snippet is the EXACT text the user selected on the page — treat it as a precise quote and act on that specific wording. comment_type="point" is a single-point pin (context_snippet is just nearby text, less precise).
+
+Messages that arrive with chat_id="chat" and NO node_id are general chat from the artifact's chat panel — not a pin. Reply with post_message(text), never mark_addressed (there is no comment to mark). Use post_message proactively as well: when you need to reach the user but have no pin to reply under — a clarifying question, a tradeoff worth flagging, a confirmation before a big change, a heads-up that something will take a while — post it to the chat. The user is watching the artifact, not the terminal, so anything you write only to the terminal is missed. (This is about substantive messages to the user, not process narration — the "don't narrate your process" rule still holds for pin replies.) You may call post_message unprompted at any time.
 
 Do NOT narrate your process. Never describe which tools you called, what you investigated, or that this arrived over a channel. The reply is only what the user reads under their pinned note.
 
@@ -132,6 +157,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           data: { type: "object" },
         },
         required: ["data"],
+      },
+    },
+    {
+      name: "post_message",
+      description: "Post a chat message to the artifact's chat panel, shown to the user immediately. Use this to proactively reach the user — a clarifying question, a tradeoff, a confirmation before a big change, a heads-up — when there is no specific pin to reply under. Prefer this over narrating to the terminal during a channel session: the user is watching the artifact, not the terminal.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Markdown message shown in the chat panel." },
+        },
+        required: ["text"],
       },
     },
   ],
@@ -186,6 +222,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         await writeData(data);
         return { content: [{ type: "text", text: "data.json replaced" }] };
       }
+      case "post_message": {
+        const text = String(args.text ?? "").trim();
+        if (!text) throw new Error("text required");
+        const file = await readChat();
+        const msg: ChatMessage = {
+          id: randomUUID(),
+          role: "claude",
+          text,
+          createdAt: new Date().toISOString(),
+        };
+        file.messages.push(msg);
+        await writeChat(file);
+        return { content: [{ type: "text", text: "posted chat message" }] };
+      }
       default:
         return {
           content: [{ type: "text", text: `unknown tool: ${req.params.name}` }],
@@ -235,12 +285,75 @@ function deliverChannel(comment: Comment) {
   });
 }
 
+function deliverChat(msg: ChatMessage) {
+  // Node-less channel event: chat_id="chat", no node_id — the instructions route
+  // this to a post_message reply, not mark_addressed. Meta is all-strings (the
+  // silent-transport killer): never put numbers/nulls/booleans in channel meta.
+  void mcp.notification({
+    method: "notifications/claude/channel",
+    params: {
+      content: msg.text,
+      meta: {
+        chat_id: "chat",
+        message_id: msg.id,
+        role: msg.role,
+        ts: msg.createdAt,
+      },
+    },
+  });
+}
+
 // --- HTTP / WebSocket UI ---
 // If another instance already owns the port, run stdio-only — tool calls still
 // land in the shared comments.json / data.json on disk. Without this, multiple
 // Claude sessions launching the same plugin would each crash on EADDRINUSE
 // and tear down the MCP transport.
 let httpServer: ReturnType<typeof Bun.serve> | null = null;
+
+// --- Teardown: one idempotent shutdown reachable from every trigger. ---
+// Only the instance that bound the port (ownsRuntime) deletes the pidfile, so
+// a stdio-only sibling tearing down never removes the live owner's file.
+let ownsRuntime = false;
+let shuttingDown = false;
+function shutdown(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.stderr.write(`__PLUGIN_NAME__: shutting down (${reason})\n`);
+  try { broadcast("server-stopping", { reason }); } catch {}
+  try { httpServer?.stop(true); } catch {}
+  if (ownsRuntime) { try { unlinkSync(RUNTIME_PATH); } catch {} }
+  process.exit(0);
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+// Claude closes this subprocess's stdin when the session ends. The MCP stdio
+// transport already put stdin in flowing mode, so "end"/"close" fire on the
+// real pipe close. (A FIFO does NOT reproduce this — verified. No resume() here:
+// the transport owns the data; resuming ourselves would discard it.)
+process.stdin.on("end", () => shutdown("session-end"));
+process.stdin.on("close", () => shutdown("session-end"));
+
+// If a previous run left .runtime.json but its pid is dead, reclaim it. A live
+// pid is left alone (it's a real sibling) — preserves the multi-session path.
+function reclaimStaleRuntime(): void {
+  if (!existsSync(RUNTIME_PATH)) return;
+  try {
+    const prev = JSON.parse(readFileSync(RUNTIME_PATH, "utf8"));
+    if (typeof prev?.pid === "number") {
+      try { process.kill(prev.pid, 0); return; } catch { unlinkSync(RUNTIME_PATH); }
+    } else {
+      unlinkSync(RUNTIME_PATH);
+    }
+  } catch { try { unlinkSync(RUNTIME_PATH); } catch {} }
+}
+reclaimStaleRuntime();
+
+// A re-created worktree or fresh scaffold may not ship chat.json — create it so
+// the chat panel's /chat.json fetch and post_message both work from first boot.
+if (!existsSync(CHAT_PATH)) {
+  try { writeFileSync(CHAT_PATH, JSON.stringify({ messages: [] }, null, 2)); } catch {}
+}
+
 try {
   httpServer = Bun.serve({
     port: PORT,
@@ -271,14 +384,23 @@ try {
         });
       }
 
+      if (url.pathname === "/chat.json") {
+        return new Response(await readFile(CHAT_PATH), {
+          headers: { "content-type": "application/json", "cache-control": "no-store" },
+        });
+      }
+
       if (url.pathname === "/comment" && req.method === "POST") {
-        const body = (await req.json()) as Partial<Comment> & { text: string };
+        const body = (await req.json()) as Partial<Comment> & { text: string; submit?: boolean };
         if (!body?.nodeId || !body?.text?.trim()) {
           return new Response(JSON.stringify({ error: "nodeId and text required" }), {
             status: 400,
             headers: { "content-type": "application/json" },
           });
         }
+        // submit defaults to true (deliver now). { submit: false } saves a DRAFT
+        // pin — persisted but NOT delivered until POST /submit flips it to pending.
+        const submit = body.submit !== false;
         const file = await readJson<{ comments: Comment[] }>(COMMENTS_PATH);
         const entry: Comment = {
           id: randomUUID(),
@@ -286,7 +408,7 @@ try {
           nodeLabel: body.nodeLabel ?? body.nodeId,
           text: body.text.trim(),
           createdAt: new Date().toISOString(),
-          status: "pending",
+          status: submit ? "pending" : "saved",
           response: null,
           addressedAt: null,
           parentId: body.parentId ?? null,
@@ -305,8 +427,47 @@ try {
         };
         file.comments.push(entry);
         await writeComments(file);
-        deliverChannel(entry);
+        if (submit) deliverChannel(entry);
         return new Response(JSON.stringify(entry), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url.pathname === "/submit" && req.method === "POST") {
+        // No ids → submit every saved (draft) comment (the "Submit all" button).
+        // ids → submit just those (individual submit from an open saved pin).
+        const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+        const file = await readJson<{ comments: Comment[] }>(COMMENTS_PATH);
+        const targets = file.comments.filter(
+          (c) => c.status === "saved" && (!Array.isArray(body.ids) || body.ids.includes(c.id)),
+        );
+        for (const c of targets) c.status = "pending";
+        await writeComments(file);
+        for (const c of targets) deliverChannel(c);
+        return new Response(JSON.stringify({ submitted: targets.map((c) => c.id) }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (url.pathname === "/chat" && req.method === "POST") {
+        const body = (await req.json()) as { text?: string };
+        if (!body?.text?.trim()) {
+          return new Response(JSON.stringify({ error: "text required" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const file = await readChat();
+        const msg: ChatMessage = {
+          id: randomUUID(),
+          role: "user",
+          text: body.text.trim(),
+          createdAt: new Date().toISOString(),
+        };
+        file.messages.push(msg);
+        await writeChat(file);
+        deliverChat(msg);
+        return new Response(JSON.stringify(msg), {
           headers: { "content-type": "application/json" },
         });
       }
@@ -328,6 +489,14 @@ try {
         return new Response(null, { status: 204 });
       }
 
+      if (url.pathname === "/shutdown" && req.method === "POST") {
+        // Respond first; tear down shortly after so the response flushes.
+        setTimeout(() => shutdown("ui"), 100);
+        return new Response(JSON.stringify({ stopping: true }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+
       return new Response("not found", { status: 404 });
     },
     websocket: {
@@ -336,12 +505,19 @@ try {
       message: () => {},
     },
   });
+  ownsRuntime = true;
+  writeFileSync(
+    RUNTIME_PATH,
+    JSON.stringify({ pid: process.pid, port: PORT, startedAt: new Date().toISOString() }, null, 2),
+  );
   process.stderr.write(`__PLUGIN_NAME__: http://localhost:${PORT}\n`);
 } catch (err) {
   const msg = err instanceof Error ? err.message : String(err);
   if (/EADDRINUSE|in use|address already/i.test(msg)) {
     process.stderr.write(
-      `__PLUGIN_NAME__: port ${PORT} already in use — running stdio-only. Tool calls will still update the shared state files.\n`
+      `__PLUGIN_NAME__: port ${PORT} already in use — running stdio-only. ` +
+      `Tool calls still update the shared state files. ` +
+      `If this is a leftover/orphan, free it with: bash stop.sh --port ${PORT}\n`
     );
     // Without Bun.serve holding the event loop open, the script would exit
     // after this catch and Claude would see "Connection closed". Pin stdin
