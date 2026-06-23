@@ -1,5 +1,5 @@
 /**
- * Lifecycle / teardown tests for the tool-channel-artifact templates.
+ * Lifecycle / teardown tests for the channel-artifact-skill templates.
  *
  * Scaffolds a temp instance from assets/*.template, then drives the REAL
  * lifecycle by spawning `bun server.ts` with a piped stdin (exactly how Claude
@@ -219,6 +219,66 @@ test("PINS-static: server has /submit + saved status; UI wires save + submit-all
   expect(html).toContain("/submit");
 });
 
+test("REGION-live: /comment persists kind:region + region box and point fx/fy", async () => {
+  const proc = startServer();
+  expect(await waitForUp(PORT)).toBe(true);
+  // region pin
+  const region = await (await fetch(`http://127.0.0.1:${PORT}/comment`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      nodeId: "a", text: "box on the image", submit: false,
+      x: 100, y: 120, anchorNodeId: "a", kind: "region",
+      region: { fx0: 0.1, fy0: 0.2, fx1: 0.5, fy1: 0.6 },
+    }),
+  })).json();
+  expect(region.kind).toBe("region");
+  expect(region.region).toEqual({ fx0: 0.1, fy0: 0.2, fx1: 0.5, fy1: 0.6 });
+  // point pin with anchor-relative fraction
+  const point = await (await fetch(`http://127.0.0.1:${PORT}/comment`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      nodeId: "a", text: "anchored point", submit: false,
+      x: 50, y: 60, anchorNodeId: "a", kind: "point", fx: 0.25, fy: 0.75,
+    }),
+  })).json();
+  expect(point.kind).toBe("point");
+  expect(point.fx).toBe(0.25);
+  expect(point.fy).toBe(0.75);
+  proc.stdin.end();
+  await waitExited(proc, 40);
+}, 30000);
+
+test("ANCHOR-static: index wires anchor-relative resolution", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  expect(html).toContain("function resolvePins");
+  expect(html).toContain("function resolveOne");
+  expect(html).toContain("function anchorPageRect");
+  expect(html).toContain("function findTextRange");
+  expect(html).toContain("getBoundingClientRect");
+  expect(html).toContain("RESOLVED");
+});
+
+test("GONE-static: index renders Done-and-Gone pins sidebar-only with 4th color", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  expect(html).toContain(".pin-item.gone");        // 4th-color CSS
+  expect(html).toContain("anchor gone");           // sidebar label
+  expect(html).toContain("displayStatus");         // gone-aware status helper
+});
+
+test("FXFY-static: point creation captures anchor-relative fraction", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  expect(html).toContain("fractionInAnchor");
+  expect(html).toContain("fx: ");   // forwarded in the /comment payload
+});
+
+test("REGION-static: index wires the marquee region gesture + render", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  expect(html).toContain(".pin-region");          // region box CSS
+  expect(html).toContain('kind: "region"');       // gesture creates a region pin
+  expect(html).toContain("rubber");               // rubber-band element id
+  expect(html).toContain('addEventListener("mousedown"');
+});
+
 test("PINS-live: a saved pin stays saved until POST /submit flips it to pending", async () => {
   const proc = startServer();
   expect(await waitForUp(PORT)).toBe(true);
@@ -238,6 +298,60 @@ test("PINS-live: a saved pin stays saved until POST /submit flips it to pending"
   expect(submitted.submitted).toContain(created.id);
   comments = await (await fetch(`http://127.0.0.1:${PORT}/comments.json`)).json();
   expect(comments.comments.find((c) => c.id === created.id).status).toBe("pending");
+  proc.stdin.end();
+  await waitExited(proc, 40);
+}, 30000);
+
+test("RESIZE-static: index re-resolves pins on window resize", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  expect(html).toContain('addEventListener("resize"');
+});
+
+test("REGION-DRAG-static: pin mode defuses native image drag for region marquees", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  // Native image/content drag must be prevented in pin mode so a region drag that
+  // starts on a draggable <img> (e.g. a slide thumbnail) isn't hijacked by the browser.
+  expect(html).toContain('addEventListener("dragstart"');
+});
+
+test("BATCH-static: Save is the primary composer action + replies can be saved", () => {
+  const html = readFileSync(join(DIR, "index.html"), "utf8");
+  // Save button precedes Submit in the composer row → Save is the default/primary action.
+  const saveIdx = html.indexOf('id="comment-save"');
+  const submitIdx = html.indexOf('id="comment-submit"');
+  expect(saveIdx).toBeGreaterThan(-1);
+  expect(saveIdx).toBeLessThan(submitIdx);
+  // Thread replies can be saved as drafts (batch) AND submitted explicitly.
+  expect(html).toContain("postReply(false)");
+  expect(html).toContain("postReply(true)");
+});
+
+test("REGION-META-static: deliverChannel emits region_box as a joined string", () => {
+  const server = readFileSync(join(DIR, "server.ts"), "utf8");
+  // region_box MUST be a string in channel meta (Record<string,string>); a number kills the transport.
+  expect(server).toContain("region_box");
+  // fractions formatted to fixed strings and comma-joined → a string value.
+  expect(server).toMatch(/\.toFixed\(4\)\)\.join\(","\)/);
+});
+
+test("REPLY-DRAFT-live: a saved reply stays saved until /submit, then delivers", async () => {
+  const proc = startServer();
+  expect(await waitForUp(PORT)).toBe(true);
+  const root = await (await fetch(`http://127.0.0.1:${PORT}/comment`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nodeId: "a", text: "root pin", submit: false }),
+  })).json();
+  const reply = await (await fetch(`http://127.0.0.1:${PORT}/comment`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nodeId: "a", text: "a drafted follow-up", parentId: root.id, submit: false }),
+  })).json();
+  expect(reply.status).toBe("saved");
+  expect(reply.parentId).toBe(root.id);
+  await fetch(`http://127.0.0.1:${PORT}/submit`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+  });
+  const comments = await (await fetch(`http://127.0.0.1:${PORT}/comments.json`)).json();
+  expect(comments.comments.find((c) => c.id === reply.id).status).toBe("pending");
   proc.stdin.end();
   await waitExited(proc, 40);
 }, 30000);

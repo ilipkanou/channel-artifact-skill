@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Auto-setup for tool-channel-artifact: ensures Bun is available.
+# Auto-setup for channel-artifact-skill: ensures Bun is available.
 # Idempotent — exits early if Bun is already installed. No user interaction.
 set -euo pipefail
 

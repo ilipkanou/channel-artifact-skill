@@ -15,7 +15,9 @@ You open a localhost page (a dashboard, outline, kanban, graph, anything), drop 
 - **Point + area pins** — click for a point pin; **select text** for an area pin that highlights the range and sends the *exact quote* to Claude.
 - **Comment threads** — follow up on any pin; replies thread under the original and continue the conversation with Claude.
 - **Two-way chat** — a docked chat panel where Claude reaches you proactively (questions, heads-ups, confirmations) via `post_message`, not only under a pin.
-- **Save & batch-submit pins** — park pins as drafts while you review, then send them individually or all at once with **Submit all**.
+- **Save & batch-submit pins (Save is the default)** — park pins (and thread replies) as drafts while you review, then send them individually or all at once with **Submit all**.
+- **Region pins** — drag a rectangle over an image or card to box a sub-area; stored as fractions of its anchor so it survives reload and resize.
+- **Anchor-stable pins + Done-and-Gone** — pins re-resolve from the live DOM each render instead of drifting; if a pin's anchor is gone, it moves to the sidebar in a distinct "anchor gone" state with its thread intact.
 - **Markdown-rendered replies**, a **pin sidebar** (numbered status badges that match the on-page markers, thread counts, **Download JSON**), and graceful render-error handling.
 - **Generic `update_node`** — Claude patches any node in `data.json` by `id`, no per-shape wiring.
 

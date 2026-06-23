@@ -48,9 +48,13 @@ type Comment = {
   contextSnippet?: string | null;
   // Set when this comment is a follow-up reply on an existing pin (thread).
   parentId?: string | null;
-  // "point" (single click) or "area" (text selection). Area pins carry rects + an exact quote in contextSnippet.
-  kind?: "point" | "area";
+  // "point" (single click), "area" (text selection), or "region" (drag rectangle).
+  kind?: "point" | "area" | "region";
   rects?: Array<{ x: number; y: number; w: number; h: number }>;
+  // Anchor-relative position (fraction 0..1 of anchorNodeId's box). Lets pins
+  // survive reflow/reload instead of drifting on frozen absolute x/y.
+  fx?: number; fy?: number;                 // point pins
+  region?: { fx0: number; fy0: number; fx1: number; fy1: number }; // region pins
 };
 
 type ChatMessage = {
@@ -99,7 +103,7 @@ const mcp = new Server(
   { name: "__PLUGIN_NAME__", version: "0.1.0" },
   {
     capabilities: { tools: {}, experimental: { "claude/channel": {} } },
-    instructions: `Pinned comments from the __PLUGIN_NAME__ artifact arrive as <channel source="__PLUGIN_NAME__" chat_id="artifact" message_id="..."> events. The meta object has comment_id, node_id, node_label, and (for freeform/area pins) pin_x/pin_y/anchor_node_id/context_snippet/comment_type.
+    instructions: `Pinned comments from the __PLUGIN_NAME__ artifact arrive as <channel source="__PLUGIN_NAME__" chat_id="artifact" message_id="..."> events. The meta object has comment_id, node_id, node_label, and (for freeform/area pins) pin_x/pin_y/anchor_node_id/context_snippet/comment_type. Pins have comment_type point | area | region. An "area" pin carries the exact quoted text in context_snippet (the reviewer selected text). A "region" pin boxes part of an element (e.g. an image or a card) — meta carries anchor_node_id plus region_box, four comma-separated fractions fx0,fy0,fx1,fy1 of that element's box (top-left to bottom-right).
 
 node_id maps to an entry in data.json — an object with a matching "id" somewhere in the data. For freeform pins (node_id="freeform"), use anchor_node_id + context_snippet for context.
 
@@ -278,6 +282,14 @@ function deliverChannel(comment: Comment) {
               page_height: String(comment.pageHeight ?? ""),
               ...(comment.anchorNodeId ? { anchor_node_id: comment.anchorNodeId } : {}),
               ...(comment.contextSnippet ? { context_snippet: comment.contextSnippet } : {}),
+              ...(comment.kind === "region" && comment.region
+                ? {
+                    region_box: [
+                      comment.region.fx0, comment.region.fy0,
+                      comment.region.fx1, comment.region.fy1,
+                    ].map((n) => n.toFixed(4)).join(","),
+                  }
+                : {}),
             }
           : {}),
       },
@@ -420,8 +432,15 @@ try {
                 pageHeight: body.pageHeight,
                 anchorNodeId: body.anchorNodeId ?? null,
                 contextSnippet: body.contextSnippet ?? null,
-                kind: body.kind === "area" ? "area" : "point",
+                kind:
+                  body.kind === "area" ? "area" : body.kind === "region" ? "region" : "point",
                 ...(Array.isArray(body.rects) ? { rects: body.rects } : {}),
+                ...(typeof body.fx === "number" && typeof body.fy === "number"
+                  ? { fx: body.fx, fy: body.fy }
+                  : {}),
+                ...(body.region && typeof body.region.fx0 === "number"
+                  ? { region: body.region }
+                  : {}),
               }
             : {}),
         };

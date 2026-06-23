@@ -81,6 +81,7 @@
   .comment .status.pending { background: rgba(245, 158, 11, 0.15); color: #b45309; }
   .comment .status.addressed { background: rgba(22, 163, 74, 0.15); color: var(--green); }
   .comment .status.saved { background: rgba(100,116,139,0.15); color: #475569; }
+  .comment .status.gone { background: rgba(124,58,237,0.15); color: #6d28d9; }
   .comment .text { font-size: 13px; color: var(--text); white-space: pre-wrap; }
   .comment .response { margin-top: 8px; padding: 8px 10px; background: #fff; border-left: 3px solid var(--green); border-radius: 4px; font-size: 12px; color: var(--text); white-space: pre-wrap; }
   .comment .response::before { content: "Claude · "; color: var(--green); font-weight: 700; }
@@ -125,6 +126,9 @@
   .pin-item.pending .pi-num { background: var(--accent2); }
   .pin-item.addressed .pi-num { background: var(--green); }
   .pin-item.saved .pi-num { background: #64748b; }
+  .pin-item.gone .pi-num { background: #7c3aed; }
+  .pin-item.gone { border-style: dashed; opacity: 0.9; }
+  .pi-gone { color: #6d28d9; font-weight: 700; }
   .pi-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
   .pi-text { font-size: 12.5px; color: var(--text); line-height: 1.35; }
   .pi-meta { font-size: 10.5px; color: var(--muted); }
@@ -135,6 +139,13 @@
   .pin-hl.pending { background: rgba(245,158,11,0.22); box-shadow: 0 0 0 1px rgba(245,158,11,0.45); }
   .pin-hl.addressed { background: rgba(22,163,74,0.18); box-shadow: 0 0 0 1px rgba(22,163,74,0.4); }
   .pin-hl.saved { background: rgba(100,116,139,0.18); box-shadow: 0 0 0 1px rgba(100,116,139,0.4); }
+
+  /* ---- Region (drag-rectangle) pins ---- */
+  .pin-region { position: absolute; pointer-events: none; border-radius: 3px; }
+  .pin-region.pending { background: rgba(245,158,11,0.12); box-shadow: 0 0 0 2px rgba(245,158,11,0.55); }
+  .pin-region.addressed { background: rgba(22,163,74,0.10); box-shadow: 0 0 0 2px rgba(22,163,74,0.5); }
+  .pin-region.saved { background: rgba(100,116,139,0.10); box-shadow: 0 0 0 2px rgba(100,116,139,0.5); }
+  #rubber { position: absolute; pointer-events: none; z-index: 75; border: 2px dashed var(--accent); background: rgba(217,119,6,0.08); border-radius: 3px; display: none; }
 
   /* ---- Chat panel (Claude <-> user, not tied to a pin) ---- */
   #chat-dock { position: fixed; left: 18px; bottom: 18px; width: 340px; z-index: 80; }
@@ -199,8 +210,8 @@
   <div class="body">
     <textarea id="comment-text" placeholder="Leave a pinned comment. It pushes to Claude over the channel instantly — Claude runs whatever queries it needs and updates the artifact in place. Your comment stays pinned with a status."></textarea>
     <div class="submit-row">
-      <button class="submit" id="comment-submit">Submit to Claude</button>
-      <button class="submit secondary" id="comment-save">Save pin</button>
+      <button class="submit" id="comment-save">Save pin</button>
+      <button class="submit secondary" id="comment-submit">Submit to Claude</button>
     </div>
     <button class="submit submit-draft" id="submit-draft" style="display:none;">Submit this pin to Claude</button>
     <div class="comments-list" id="comments-list"></div>
@@ -341,6 +352,7 @@ function render() {
     window.renderArtifact(DATA);
   }
 
+  resolvePins();
   renderSidebar();
   renderFloatingPins();
   refreshOpenThread();
@@ -360,6 +372,14 @@ function threadStatus(rootId) {
   return t.length && t.every((c) => c.status === "addressed") ? "addressed" : "pending";
 }
 
+// Status used for SIDEBAR display/colour: "gone" overrides everything when the
+// pin's anchor can't be resolved; otherwise the normal thread status.
+function displayStatus(rootId) {
+  const r = RESOLVED.get(rootId);
+  if (r && r.gone) return "gone";
+  return threadStatus(rootId);
+}
+
 // Friendly label for a node id, shown in the sidebar. Defaults to the matching
 // node's label (or the id). Customise to map ids to nicer names for your domain.
 function nodeTitle(nodeId) {
@@ -369,13 +389,16 @@ function nodeTitle(nodeId) {
   return n ? (n.label || String(n.id)) : nodeId;
 }
 
-// Stable display number per pin = its position among on-page markers (creation
-// order), so a sidebar number matches the teardrop number on the page.
+// Stable display number = position among ON-PAGE (resolved, not gone) markers in
+// creation order, so a sidebar number matches the teardrop on the page.
 function pinNumbers() {
   const m = new Map();
-  COMMENTS
-    .filter((c) => typeof c.x === "number" && typeof c.y === "number")
-    .forEach((c, i) => m.set(c.id, i + 1));
+  let i = 0;
+  COMMENTS.forEach((c) => {
+    if (c.parentId) return;
+    const r = RESOLVED.get(c.id);
+    if (r && !r.gone) m.set(c.id, ++i);
+  });
   return m;
 }
 
@@ -384,7 +407,7 @@ function renderSidebar() {
   const roots = rootPins();
   const nums = pinNumbers();
   document.getElementById("sb-count").textContent = String(roots.length);
-  const savedCount = roots.filter((r) => r.status === "saved").length;
+  const savedCount = COMMENTS.filter((c) => c.status === "saved").length;
   const submitAllBtn = document.getElementById("submit-all");
   submitAllBtn.textContent = `Submit all (${savedCount})`;
   submitAllBtn.disabled = savedCount === 0;
@@ -393,23 +416,28 @@ function renderSidebar() {
     return;
   }
   list.innerHTML = roots.map((r) => {
-    const status = threadStatus(r.id);
+    const status = displayStatus(r.id);
     const count = threadFor(r.id).length;
     const num = nums.get(r.id) ?? "";
+    const meta = status === "gone"
+      ? `<span class="pi-gone">anchor gone</span>`
+      : `${escapeHtml(nodeTitle(r.anchorNodeId || r.nodeId)).slice(0, 42)}${count > 1 ? ` · <b class="pi-count">${count} in thread</b>` : ""}`;
     return `
       <button class="pin-item ${status} ${activePin && activePin.id === r.id ? "active" : ""}" data-pin-id="${r.id}">
-        <span class="pi-num ${status}">${num}</span>
+        <span class="pi-num ${status}">${num || "•"}</span>
         <span class="pi-body">
           <span class="pi-text">${escapeHtml(r.text).slice(0, 90)}</span>
-          <span class="pi-meta">${escapeHtml(nodeTitle(r.anchorNodeId || r.nodeId)).slice(0, 42)}${count > 1 ? ` · <b class="pi-count">${count} in thread</b>` : ""}</span>
+          <span class="pi-meta">${meta}</span>
         </span>
       </button>`;
   }).join("");
   list.querySelectorAll(".pin-item").forEach((el) => {
     el.onclick = () => {
       const id = el.dataset.pinId;
-      const pin = COMMENTS.find((c) => c.id === id);
-      if (pin && typeof pin.y === "number") window.scrollTo({ top: Math.max(0, pin.y - 140), behavior: "smooth" });
+      const r = RESOLVED.get(id);
+      if (r && !r.gone && typeof r.y === "number") {
+        window.scrollTo({ top: Math.max(0, r.y - 140), behavior: "smooth" });
+      }
       openPinPanel(id);
     };
   });
@@ -434,34 +462,135 @@ function toPageRects(clientRects, sx, sy) {
     .map((r) => ({ x: r.left + sx, y: r.top + sy, w: r.width, h: r.height }));
 }
 
+// id -> { gone, x, y, rects?, region? }. Recomputed from the live DOM each render
+// so pins track their anchor across reflow/reload instead of drifting on frozen px.
+let RESOLVED = new Map();
+
+// Anchor element's box in PAGE coordinates (client rect + scroll), or null if the
+// element is missing or collapsed to zero size.
+function anchorPageRect(nodeId) {
+  if (!nodeId || nodeId === "freeform") return null;
+  const el = document.querySelector(`[data-node-id="${CSS.escape(String(nodeId))}"]`);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return null;
+  return { left: r.left + window.scrollX, top: r.top + window.scrollY, width: r.width, height: r.height };
+}
+
+// Find an exact text run inside rootEl and return a Range, or null if absent.
+function findTextRange(rootEl, needle) {
+  if (!rootEl || !needle) return null;
+  const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+  let full = "";
+  const map = [];
+  let n;
+  while ((n = walker.nextNode())) { map.push({ node: n, start: full.length }); full += n.nodeValue; }
+  const idx = full.indexOf(needle);
+  if (idx < 0) return null;
+  const end = idx + needle.length;
+  const startEntry = [...map].reverse().find((m) => m.start <= idx);
+  const endEntry = [...map].reverse().find((m) => m.start < end);
+  if (!startEntry || !endEntry) return null;
+  const range = document.createRange();
+  range.setStart(startEntry.node, idx - startEntry.start);
+  range.setEnd(endEntry.node, end - endEntry.start);
+  return range;
+}
+
+// Resolve ONE comment to live geometry, or mark it gone (anchor/text no longer present).
+function resolveOne(c) {
+  const rect = anchorPageRect(c.anchorNodeId);
+
+  if (c.kind === "region" && c.region) {
+    if (!rect) return { gone: true };
+    const x0 = rect.left + c.region.fx0 * rect.width, y0 = rect.top + c.region.fy0 * rect.height;
+    const x1 = rect.left + c.region.fx1 * rect.width, y1 = rect.top + c.region.fy1 * rect.height;
+    const box = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+    return { gone: false, x: box.x, y: box.y, region: box };
+  }
+
+  if (c.kind === "area") {
+    if (!rect) return { gone: true };
+    const el = document.querySelector(`[data-node-id="${CSS.escape(String(c.anchorNodeId))}"]`);
+    const range = findTextRange(el, c.contextSnippet || "");
+    if (range) {
+      const rects = toPageRects(range.getClientRects(), window.scrollX, window.scrollY);
+      if (rects.length) return { gone: false, x: rects[0].x + rects[0].w, y: rects[0].y, rects };
+    }
+    // Anchor present but the quoted text is gone -> Done-and-Gone (the thing it pointed at was deleted).
+    return { gone: true };
+  }
+
+  // POINT (and legacy pins). Prefer anchor-relative fraction; fall back to frozen x/y.
+  if (rect && typeof c.fx === "number" && typeof c.fy === "number") {
+    return { gone: false, x: rect.left + c.fx * rect.width, y: rect.top + c.fy * rect.height };
+  }
+  if (typeof c.x === "number" && typeof c.y === "number") {
+    // A legacy pin that DID name an anchor which is now missing -> gone; otherwise keep frozen px.
+    if (c.anchorNodeId && c.anchorNodeId !== "freeform" && !rect) return { gone: true };
+    return { gone: false, x: c.x, y: c.y };
+  }
+  return { gone: true };
+}
+
+// Page point -> fraction (0..1) of the anchor element's box, clamped. null if no anchor.
+function fractionInAnchor(anchorNodeId, pageX, pageY) {
+  const rect = anchorPageRect(anchorNodeId);
+  if (!rect) return null;
+  const clamp = (v) => Math.max(0, Math.min(1, v));
+  return { fx: clamp((pageX - rect.left) / rect.width), fy: clamp((pageY - rect.top) / rect.height) };
+}
+
+// Resolve every root pin once per render; replies inherit the root's placement.
+function resolvePins() {
+  RESOLVED = new Map();
+  for (const c of COMMENTS) {
+    if (c.parentId) continue;
+    RESOLVED.set(c.id, resolveOne(c));
+  }
+}
+
 function renderFloatingPins() {
   const overlay = document.getElementById("pin-overlay");
   overlay.style.height = document.documentElement.scrollHeight + "px";
-  const pins = COMMENTS.filter((c) => typeof c.x === "number" && typeof c.y === "number");
-  const highlights = COMMENTS
-    .filter((c) => Array.isArray(c.rects) && c.rects.length)
-    .map((c) => c.rects
-      .map((r) => `<div class="pin-hl ${c.status}" style="left:${r.x}px; top:${r.y}px; width:${r.w}px; height:${r.h}px;"></div>`)
-      .join(""))
-    .join("");
-  overlay.innerHTML = highlights + pins.map((c, i) => `
+  const nums = pinNumbers();
+
+  // Highlights: area rects + region boxes, from resolved geometry.
+  let highlights = "";
+  for (const c of COMMENTS) {
+    if (c.parentId) continue;
+    const r = RESOLVED.get(c.id);
+    if (!r || r.gone) continue;
+    if (Array.isArray(r.rects)) {
+      highlights += r.rects
+        .map((rc) => `<div class="pin-hl ${c.status}" style="left:${rc.x}px; top:${rc.y}px; width:${rc.w}px; height:${rc.h}px;"></div>`)
+        .join("");
+    }
+    if (r.region) {
+      highlights += `<div class="pin-region ${c.status}" style="left:${r.region.x}px; top:${r.region.y}px; width:${r.region.w}px; height:${r.region.h}px;"></div>`;
+    }
+  }
+
+  // Markers: one per placed root pin.
+  const placed = COMMENTS.filter((c) => !c.parentId && RESOLVED.get(c.id) && !RESOLVED.get(c.id).gone);
+  const markers = placed.map((c) => {
+    const r = RESOLVED.get(c.id);
+    return `
     <div class="floating-pin ${c.status} ${activePin && activePin.id === c.id ? "active" : ""}"
-         data-pin-id="${c.id}" style="left:${c.x}px; top:${c.y}px;"
+         data-pin-id="${c.id}" style="left:${r.x}px; top:${r.y}px;"
          title="${escapeHtml(c.text).slice(0, 80)}">
       <div class="marker">
         <svg viewBox="0 0 26 32"><path d="M13 1c6.6 0 12 5 12 11 0 8-12 19-12 19S1 20 1 12C1 6 6.4 1 13 1z"/></svg>
-        <span>${i + 1}</span>
+        <span>${nums.get(c.id) ?? ""}</span>
       </div>
       <button class="delete-btn" data-delete-id="${c.id}" title="Delete pin">×</button>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
+
+  overlay.innerHTML = highlights + markers;
   overlay.querySelectorAll(".floating-pin").forEach((el) => {
     el.onclick = (e) => {
-      if (e.target.matches(".delete-btn")) {
-        e.stopPropagation();
-        deleteComment(e.target.dataset.deleteId);
-        return;
-      }
+      if (e.target.matches(".delete-btn")) { e.stopPropagation(); deleteComment(e.target.dataset.deleteId); return; }
       e.stopPropagation();
       openPinPanel(el.dataset.pinId);
     };
@@ -498,14 +627,16 @@ function positionPanelNear(x, y) {
 function openPinDraftPanel(p) {
   document.getElementById("comment-text").style.display = "";
   document.getElementById("comment-submit").textContent = "Submit to Claude";
+  document.getElementById("comment-save").textContent = "Save pin";
   document.getElementById("comment-save").style.display = "";
   document.querySelector(".submit-row").style.display = "flex";
   document.getElementById("submit-draft").style.display = "none";
   activePin = null;
   pendingPin = p;
-  document.getElementById("panel-title").textContent = p.kind === "area" ? "New note on selection" : "New pin";
+  const kindLabel = p.kind === "area" ? "New note on selection" : p.kind === "region" ? "New note on region" : "New pin";
+  document.getElementById("panel-title").textContent = kindLabel;
   document.getElementById("panel-sub").textContent =
-    (p.kind === "area" ? "selected text" : `at (${Math.round(p.x)}, ${Math.round(p.y)})`) +
+    (p.kind === "area" ? "selected text" : p.kind === "region" ? "selected region" : `at (${Math.round(p.x)}, ${Math.round(p.y)})`) +
     (p.anchorNodeId ? ` · ${p.anchorNodeId}` : "");
   document.getElementById("comment-text").value = "";
   document.getElementById("comments-list").innerHTML =
@@ -538,7 +669,8 @@ function openPinPanel(pinId) {
   const isDraft = root.status === "saved";
   document.getElementById("comment-text").style.display = isDraft ? "none" : "";
   document.querySelector(".submit-row").style.display = isDraft ? "none" : "flex";
-  document.getElementById("comment-save").style.display = "none";
+  document.getElementById("comment-save").style.display = isDraft ? "none" : "";
+  document.getElementById("comment-save").textContent = "Save reply";
   document.getElementById("comment-submit").textContent = "Submit reply";
   document.getElementById("submit-draft").style.display = isDraft ? "block" : "none";
   activePin = { id: pinId, nodeId: root.nodeId, nodeLabel: root.nodeLabel, anchorNodeId: root.anchorNodeId ?? null };
@@ -552,8 +684,9 @@ function openPinPanel(pinId) {
   document.getElementById("comment-text").placeholder = "Reply or follow up on this pin…";
   document.getElementById("comments-list").innerHTML = thread.map(renderCommentHTML).join("");
   wireDeleteButtons();
-  const x = root.x ?? window.scrollX + window.innerWidth / 2;
-  const y = root.y ?? window.scrollY + window.innerHeight / 2;
+  const r = RESOLVED.get(pinId);
+  const x = (r && !r.gone && r.x != null) ? r.x : window.scrollX + window.innerWidth / 2;
+  const y = (r && !r.gone && r.y != null) ? r.y : window.scrollY + window.innerHeight / 2;
   positionPanelNear(x, y);
   renderFloatingPins();
 }
@@ -613,7 +746,11 @@ async function postPin(deliver) {
       anchorNodeId: pendingPin.anchorNodeId,
       contextSnippet: pendingPin.contextSnippet,
       kind: pendingPin.kind || "point",
+      ...(typeof pendingPin.fx === "number" && typeof pendingPin.fy === "number"
+        ? { fx: pendingPin.fx, fy: pendingPin.fy }
+        : {}),
       ...(pendingPin.rects ? { rects: pendingPin.rects } : {}),
+      ...(pendingPin.region ? { region: pendingPin.region } : {}),
     };
     await fetch("/comment", {
       method: "POST",
@@ -628,11 +765,12 @@ async function postPin(deliver) {
   } finally { submitBtn.disabled = false; saveBtn.disabled = false; }
 }
 
-async function postReply() {
+async function postReply(deliver) {
   const text = document.getElementById("comment-text").value.trim();
   if (!text || !activePin) return;
-  const btn = document.getElementById("comment-submit");
-  btn.disabled = true;
+  const submitBtn = document.getElementById("comment-submit");
+  const saveBtn = document.getElementById("comment-save");
+  submitBtn.disabled = true; saveBtn.disabled = true;
   try {
     await fetch("/comment", {
       method: "POST",
@@ -641,16 +779,17 @@ async function postReply() {
         nodeId: activePin.nodeId || "freeform",
         nodeLabel: activePin.nodeLabel || "Follow-up",
         text,
+        submit: deliver,
         parentId: activePin.id,
         anchorNodeId: activePin.anchorNodeId,
       }),
     });
     document.getElementById("comment-text").value = "";
-    showToast();
+    showToast(deliver ? "Reply sent to Claude." : "Reply saved as draft.");
     const reopenId = activePin.id;
     await load();
     openPinPanel(reopenId);
-  } finally { btn.disabled = false; }
+  } finally { submitBtn.disabled = false; saveBtn.disabled = false; }
 }
 
 async function submitPins(ids) {
@@ -667,9 +806,12 @@ async function submitPins(ids) {
 
 document.getElementById("comment-submit").onclick = () => {
   if (pendingPin) postPin(true);
-  else if (activePin) postReply();
+  else if (activePin) postReply(true);
 };
-document.getElementById("comment-save").onclick = () => { if (pendingPin) postPin(false); };
+document.getElementById("comment-save").onclick = () => {
+  if (pendingPin) postPin(false);
+  else if (activePin) postReply(false);
+};
 document.getElementById("submit-draft").onclick = () => { if (activePin) submitPins([activePin.id]); };
 document.getElementById("submit-all").onclick = () => submitPins();
 
@@ -683,14 +825,49 @@ pinToggleBtn.onclick = () => {
 
 document.getElementById("dl-json").onclick = downloadJson;
 
+// Region pins: press-drag a rectangle. We record the start on mousedown and draw
+// a rubber-band on mousemove; mouseup decides point vs area vs region.
+let dragStart = null;
+document.addEventListener("mousedown", (e) => {
+  if (!pinMode) return;
+  if (e.target.closest("#panel") || e.target.closest("#pin-sidebar") ||
+      e.target.closest("#pin-toggle") || e.target.closest("#chat-dock") ||
+      e.target.closest(".floating-pin")) return;
+  dragStart = { x: e.pageX, y: e.pageY, anchor: e.target.closest("[data-node-id]") };
+});
+// Prevent native image/content drag in Pin mode so a region marquee that starts on
+// an image (draggable by default) isn't hijacked by the browser's native DnD.
+document.addEventListener("dragstart", (e) => { if (pinMode) e.preventDefault(); });
+document.addEventListener("mousemove", (e) => {
+  if (!pinMode || !dragStart) return;
+  const rb = document.getElementById("rubber");
+  if (!rb) return;
+  // Suppress the region marquee while the user is selecting TEXT — that drag is an
+  // area pin, not a region; a dashed box alongside a text selection is confusing.
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) { rb.style.display = "none"; return; }
+  const x = Math.min(dragStart.x, e.pageX), y = Math.min(dragStart.y, e.pageY);
+  const w = Math.abs(e.pageX - dragStart.x), h = Math.abs(e.pageY - dragStart.y);
+  if (w < 4 && h < 4) { rb.style.display = "none"; return; }
+  rb.style.display = "block";
+  rb.style.left = x + "px"; rb.style.top = y + "px";
+  rb.style.width = w + "px"; rb.style.height = h + "px";
+});
+
 // Pin mode: on mouseup, a non-empty text selection → AREA pin (exact quote +
 // highlight boxes); a plain click → POINT pin. The selection is captured BEFORE
 // opening the panel, because focusing the textarea collapses it.
 document.addEventListener("mouseup", (e) => {
+  const start = dragStart;
+  dragStart = null;
+  const rb = document.getElementById("rubber");
+  if (rb) rb.style.display = "none";
+
   if (!pinMode) return;
   if (e.target.closest("#panel")) return;
   if (e.target.closest("#pin-sidebar")) return;
   if (e.target.closest("#pin-toggle")) return;
+  if (e.target.closest("#chat-dock")) return;
   if (e.target.closest(".floating-pin")) return;
 
   const sel = window.getSelection();
@@ -710,22 +887,53 @@ document.addEventListener("mouseup", (e) => {
       y: bb.top + window.scrollY,
       rects,
       anchorNodeId: anchorEl ? anchorEl.dataset.nodeId : null,
-      contextSnippet: selText.slice(0, 400),
+      contextSnippet: selText.slice(0, 1000),
       label: selText.slice(0, 60),
     });
     return;
   }
 
+  // REGION pin — dragged a box but selected no text (e.g. on an image/card).
+  if (start) {
+    const dx = e.pageX - start.x, dy = e.pageY - start.y;
+    if (Math.hypot(dx, dy) > 6) {
+      const anchorEl = start.anchor;
+      const rect = anchorEl ? anchorPageRect(anchorEl.dataset.nodeId) : null;
+      const x0p = Math.min(start.x, e.pageX), y0p = Math.min(start.y, e.pageY);
+      const x1p = Math.max(start.x, e.pageX), y1p = Math.max(start.y, e.pageY);
+      let region = null;
+      if (rect) {
+        const cl = (v) => Math.max(0, Math.min(1, v));
+        region = {
+          fx0: cl((x0p - rect.left) / rect.width), fy0: cl((y0p - rect.top) / rect.height),
+          fx1: cl((x1p - rect.left) / rect.width), fy1: cl((y1p - rect.top) / rect.height),
+        };
+      }
+      openPinDraftPanel({
+        kind: "region",
+        x: x0p, y: y0p,
+        anchorNodeId: anchorEl ? anchorEl.dataset.nodeId : null,
+        contextSnippet: anchorEl ? `region of ${anchorEl.dataset.nodeId}` : "freeform region",
+        label: anchorEl ? `region · ${anchorEl.dataset.nodeId}` : "region",
+        ...(region ? { region } : {}),
+      });
+      return;
+    }
+  }
+
   // POINT pin — plain click on an element or whitespace.
   const anchor = e.target.closest("[data-node-id]");
+  const anchorId = anchor ? anchor.dataset.nodeId : null;
   const nearText = (e.target.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 200);
+  const frac = anchorId ? fractionInAnchor(anchorId, e.pageX, e.pageY) : null;
   openPinDraftPanel({
     kind: "point",
     x: e.pageX,
     y: e.pageY,
-    anchorNodeId: anchor ? anchor.dataset.nodeId : null,
+    anchorNodeId: anchorId,
     contextSnippet: nearText,
     label: anchor ? anchor.textContent.trim().slice(0, 60) : null,
+    ...(frac || {}),
   });
 });
 
@@ -867,6 +1075,12 @@ load();
 loadChat();
 setInterval(() => { load(); loadChat(); }, 30_000);
 connectWs();
+let _resizeT = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_resizeT);
+  _resizeT = setTimeout(render, 120);
+});
 </script>
+<div id="rubber"></div>
 </body>
 </html>
