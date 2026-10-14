@@ -104,7 +104,7 @@ Start from the bundled templates in `assets/`:
 - `assets/chat.json.template` → `chat.json`
 - `assets/hooks.json.template` → `hooks.json` · `assets/stop.sh.template` → `stop.sh` · `assets/start.sh.template` → `start.sh`
 
-Replace `__PLUGIN_NAME__`, `__PLUGIN_NAME_UPPER__`, `__PORT__`, `__TITLE__`, `__DESCRIPTION__` placeholders. Run `bun install` in the plugin directory, then `chmod +x stop.sh start.sh`.
+Replace `__PLUGIN_NAME__`, `__PLUGIN_NAME_UPPER__`, `__PORT__`, `__TITLE__`, `__DESCRIPTION__` placeholders. `__PLUGIN_NAME_UPPER__` must use **underscores, never hyphens** (`ISSUE_BOARD`, not `ISSUE-BOARD`): it becomes part of the identifier `process.env.<NAME>_PORT` in `server.ts`, where a hyphen reads as a minus sign (`process.env.ISSUE - BOARD_PORT`) and the server crashes on start with `ReferenceError: BOARD_PORT is not defined`. Run `bun install` in the plugin directory, then `chmod +x stop.sh start.sh`.
 
 ## Step 3: Build the viz
 
@@ -124,7 +124,7 @@ The starter shape is a flat `nodes` array, which the bundled `renderArtifactInne
 
 Use whatever your viz needs (graph `{nodes,links}`, kanban `{columns:[{cards}]}`, timeline `{events}`, etc.) — `references/building-the-viz.md` has worked shapes.
 
-No schema is enforced beyond "valid JSON object". `update_node` does a **generic lookup** — it patches whatever object has a matching `id`, found by walking every array property of `data` (one nesting level deep). So `nodes`, `columns[].cards`, `events`, etc. all work with no server changes. Only customise the lookup in `server.ts` if two nodes can share an id or you need a more specific match. The one contract: **every commentable element in `renderArtifactInner()` needs `data-node-id="<id>"` matching an object's `id`** so `update_node` can patch it.
+No schema is enforced beyond "valid JSON object". `update_node` does a **generic lookup** — it patches whatever object has a matching `id`, found by walking every array property of `data` and descending into every array nested inside those items, at any depth (first match wins). So `nodes`, `columns[].cards`, `events`, etc. all work with no server changes. Only customise the lookup in `server.ts` if two nodes can share an id or you need a more specific match. The one contract: **every commentable element in `renderArtifactInner()` needs `data-node-id="<id>"` matching an object's `id`** so `update_node` can patch it.
 
 ## Step 5: Register in the project's `.mcp.json`
 
@@ -177,7 +177,7 @@ Critical reminders to state plainly in your reply, not just inside the code bloc
 - **The current session cannot receive channel events.** Channel notifications only flow to the session that loaded the plugin via `--dangerously-load-development-channels`. Spawning a new terminal is not optional.
 - **Tell the user the actual URL.** Include the real `http://localhost:<PORT>` (with whatever port you picked) in your reply so they can click it. Don't leave `__PORT__` placeholders.
 - **Pin Mode is off by default.** First-time users will click and nothing happens; they'll think it's broken. Mention the top-right toggle explicitly.
-- **`start.sh` includes `--dangerously-skip-permissions` by default** — fast iterate-in-place on a localhost-only tool. It's commented in the script; tell users they can drop the flag if they'd rather approve each tool call.
+- **`start.sh` keeps permission prompts on by default.** `--dangerously-skip-permissions` is opt-in: `CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1 bash start.sh`. Tell users the trade-off: it is faster for iterate-in-place, but every tool call Claude makes while answering a comment (shell commands and file edits included) then runs without asking.
 - **Teardown is automatic on session end** (also Ctrl-C, the Done button, the SessionEnd hook, and `start.sh`'s own exit trap). If a `kill -9` ever leaves the port held, run `bash stop.sh --port <PORT>`. See `references/architecture.md` → Lifecycle & teardown.
 
 ## Example walk-throughs
@@ -189,14 +189,14 @@ Three worked examples — a kanban board, a data-model graph editor, and an imag
 - `assets/plugin.json.template` — `.claude-plugin/plugin.json`
 - `assets/mcp.json.template` — `.mcp.json` (plugin-internal, references `${CLAUDE_PLUGIN_ROOT}`)
 - `assets/package.json.template` — `package.json` with the MCP SDK dep
-- `assets/server.ts.template` — Bun HTTP + WS + MCP stdio + tools (`mark_addressed`, `update_node`, `update_data`, `post_message`), the `/comment` / `/submit` / `/chat` routes, EADDRINUSE handling, and string-only channel meta
+- `assets/server.ts.template` — Bun HTTP + WS + MCP stdio + tools (`mark_addressed`, `update_node`, `update_data`, `post_message`), the `/comment` / `/submit` / `/chat` routes, the request guard that refuses other websites (Host, Origin and JSON Content-Type checks), EADDRINUSE handling, and string-only channel meta
 - `assets/index.html.template` — artifact scaffold: pin overlay, comment panel near click, save-vs-submit pins + sidebar batch submit, the chat dock, WebSocket, delete-without-notify. Paint your viz into `#content` via `window.renderArtifact(DATA)`.
 - `assets/data.json.template` — empty shape placeholder
 - `assets/comments.json.template` — `{ "comments": [] }`
 - `assets/chat.json.template` — `{ "messages": [] }` (the chat panel's state; server auto-creates it if missing)
 - `assets/hooks.json.template` — SessionEnd hook (runs stop.sh), referenced by plugin.json
 - `assets/stop.sh.template` — manual teardown / `--port` orphan reclaim
-- `assets/start.sh.template` — one-command launcher: resolves the project root (auto-generates `.mcp.json` if missing), frees a stale port, launches Claude Code with the channel + skip-permissions, auto-opens the URL on bind, frees the port on exit
+- `assets/start.sh.template` — one-command launcher: resolves the project root (auto-generates `.mcp.json` if missing), frees a stale port, launches Claude Code with the channel (skip-permissions only when `CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1`), auto-opens the URL on bind, frees the port on exit
 - `test/lifecycle.test.ts` — `bun test` suite: scaffolds a temp instance from the templates and exercises the real lifecycle (teardown triggers, port reclaim, multi-instance), plus static + live checks for the chat and save/submit features
 - `references/troubleshooting.md` — every gotcha we've hit, with one-liner fixes
 - `references/architecture.md` — the plumbing diagram + deeper rationale (why channels > polling, why stdio+HTTP in one process, when to deviate)
@@ -207,6 +207,7 @@ Three worked examples — a kanban board, a data-model graph editor, and an imag
 
 Hard constraints, read before every build. Violating any of these breaks the artifact in a way that is painful to diagnose later.
 
+- 2026-10-14: **Keep the request guard, and send every POST as JSON.** `server.ts` runs `refuseForeign()` on every request: Host must be `localhost:<PORT>` or `127.0.0.1:<PORT>`, a POST / DELETE / WebSocket upgrade carrying another site's `Origin` is refused (403), and a POST without `Content-Type: application/json` is refused (415). This is what stops a web page from another site, open in the same browser, from posting comments into the live session or stopping the server. Any route you add sits behind it automatically. Any `fetch` you add to `index.html` must send `headers: { "content-type": "application/json" }` and a JSON body on a POST, even an empty `"{}"`, or it fails with 415. Never loosen the guard to make a call work; fix the call.
 - 2026-06-22: **Region (marquee) pins must defuse native browser drag, and the rubber-band must yield to text selection.** Images are `draggable` by default, so a region drag that starts on an `<img>` (e.g. a thumbnail) gets hijacked by native image drag-and-drop — `mousemove` is suppressed and the captured box is wrong (spans far past the drag, looks like it grabbed the whole element). Fix: in Pin mode, `document.addEventListener("dragstart", e => { if (pinMode) e.preventDefault(); })`, and clamp the region fractions to `[0,1]`. Separately, the `mousemove` rubber-band MUST be suppressed while a text selection is active (`const s = getSelection(); if (s && !s.isCollapsed) { hide; return; }`) — otherwise selecting text (an *area* pin) also paints a confusing dashed box. Both fixed in the template; retrofit any instance.
 - 2026-06-20: **The Pin-mode `mouseup` handler MUST exclude `#chat-dock`** (alongside `#panel` / `#pin-sidebar` / `#pin-toggle` / `.floating-pin`). Without it, clicking the chat input while Pin mode is on drops a pin instead of focusing the textarea — the reviewer reports "I can't type into the chat, a New Pin fires instead." Fixed in the template `index.html`; retrofit any existing instance with the same guard.
 - 2026-06-19: **Channel meta must be `Record<string, string>`.** Numbers / nulls / booleans make Zod throw in Claude's channel handler and the MCP transport closes *silently* after the first notification. Always `String()` every meta value and drop nullish keys via spread. This is the #1 silent-failure mode.

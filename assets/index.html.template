@@ -412,7 +412,7 @@ function renderSidebar() {
   submitAllBtn.textContent = `Submit all (${savedCount})`;
   submitAllBtn.disabled = savedCount === 0;
   if (!roots.length) {
-    list.innerHTML = `<div class="sb-empty">No pins yet. Turn on Pin mode and click the outline to add one.</div>`;
+    list.innerHTML = `<div class="sb-empty">No pins yet. Turn on Pin mode and click the page to add one.</div>`;
     return;
   }
   list.innerHTML = roots.map((r) => {
@@ -1067,7 +1067,13 @@ function showStoppedBanner() {
 }
 document.getElementById("shutdown-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and close the channel? The artifact will go offline.")) return;
-  try { await fetch("/shutdown", { method: "POST" }); } catch {}
+  try {
+    await fetch("/shutdown", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  } catch {}
   showStoppedBanner();
 });
 

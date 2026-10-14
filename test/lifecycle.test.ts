@@ -67,7 +67,9 @@ async function waitForUp(port: number, tries = 60): Promise<boolean> {
 }
 
 function lsofPort(port: number): string {
-  return Bun.spawnSync(["lsof", "-ti", `:${port}`]).stdout.toString().trim();
+  // Listening sockets only. A plain `lsof -ti :port` also lists this test runner's
+  // own keep-alive client connections, and afterEach would then SIGKILL the runner.
+  return Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim();
 }
 function portFree(port: number): boolean { return lsofPort(port) === ""; }
 
@@ -112,7 +114,10 @@ test("AC3: SIGTERM tears down + frees port", async () => {
 test("AC1: POST /shutdown tears down + frees port", async () => {
   const proc = startServer();
   expect(await waitForUp(PORT)).toBe(true);
-  const res = await fetch(`http://127.0.0.1:${PORT}/shutdown`, { method: "POST" });
+  // Same request the page's Done button sends: every POST must be JSON.
+  const res = await fetch(`http://127.0.0.1:${PORT}/shutdown`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
   expect(res.status).toBe(200);
   expect(await res.json()).toMatchObject({ stopping: true });
   expect(await waitExited(proc, 40)).toBe(true);
@@ -354,4 +359,142 @@ test("REPLY-DRAFT-live: a saved reply stays saved until /submit, then delivers",
   expect(comments.comments.find((c) => c.id === reply.id).status).toBe("pending");
   proc.stdin.end();
   await waitExited(proc, 40);
+}, 30000);
+
+// --- Request guard: another website open in the same browser must not be able to
+// post comments (they reach the live Claude session), delete them, stop the server,
+// or listen on the WebSocket. The page the server itself serves must keep working.
+
+const BASE = `http://127.0.0.1:${PORT}`;
+const OWN_ORIGIN = `http://localhost:${PORT}`;
+const FOREIGN_ORIGIN = "http://evil.example";
+
+async function withServer(fn: (proc: Bun.Subprocess) => Promise<void>) {
+  const proc = startServer();
+  try {
+    expect(await waitForUp(PORT)).toBe(true);
+    await fn(proc);
+  } finally {
+    proc.stdin.end();
+    await waitExited(proc, 40);
+  }
+}
+
+async function storedTexts(): Promise<string[]> {
+  const file = await (await fetch(`${BASE}/comments.json`)).json();
+  return file.comments.map((c) => c.text);
+}
+
+test("SEC-a: a cross-origin POST /comment is refused and not stored", async () => {
+  await withServer(async () => {
+    const res = await fetch(`${BASE}/comment`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: FOREIGN_ORIGIN },
+      body: JSON.stringify({ nodeId: "a", text: "sec-a cross-origin" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await storedTexts()).not.toContain("sec-a cross-origin");
+  });
+}, 30000);
+
+test("SEC-b: a text/plain POST is refused even from the page's own origin", async () => {
+  await withServer(async () => {
+    // The body is valid JSON, so only the Content-Type check can stop it.
+    const res = await fetch(`${BASE}/comment`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", origin: OWN_ORIGIN },
+      body: JSON.stringify({ nodeId: "a", text: "sec-b text/plain" }),
+    });
+    expect(res.status).toBe(415);
+    const form = await fetch(`${BASE}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "text=sec-b-form",
+    });
+    expect(form.status).toBe(415);
+    expect(await storedTexts()).not.toContain("sec-b text/plain");
+  });
+}, 30000);
+
+test("SEC-c: a request with a foreign Host is refused (DNS-rebinding guard)", async () => {
+  await withServer(async () => {
+    const post = await fetch(`${BASE}/comment`, {
+      method: "POST",
+      headers: { "content-type": "application/json", host: `evil.example:${PORT}` },
+      body: JSON.stringify({ nodeId: "a", text: "sec-c bad host" }),
+    });
+    expect(post.status).toBe(403);
+    // Reads are guarded too: a rebinding page must not read the comments.
+    const read = await fetch(`${BASE}/comments.json`, { headers: { host: `evil.example:${PORT}` } });
+    expect(read.status).toBe(403);
+    expect(await storedTexts()).not.toContain("sec-c bad host");
+  });
+}, 30000);
+
+test("SEC-d: a same-origin JSON POST still works (both localhost and 127.0.0.1)", async () => {
+  await withServer(async () => {
+    for (const [host, origin] of [
+      [`localhost:${PORT}`, OWN_ORIGIN],
+      [`127.0.0.1:${PORT}`, `http://127.0.0.1:${PORT}`],
+    ]) {
+      const res = await fetch(`${BASE}/comment`, {
+        method: "POST",
+        headers: { "content-type": "application/json", host, origin },
+        body: JSON.stringify({ nodeId: "a", text: `sec-d via ${host}` }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).status).toBe("pending");
+    }
+    const texts = await storedTexts();
+    expect(texts).toContain(`sec-d via localhost:${PORT}`);
+    expect(texts).toContain(`sec-d via 127.0.0.1:${PORT}`);
+  });
+}, 30000);
+
+test("SEC-e: POST /shutdown from a foreign origin is refused; the server keeps running", async () => {
+  await withServer(async (proc) => {
+    const res = await fetch(`${BASE}/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: FOREIGN_ORIGIN },
+      body: "{}",
+    });
+    expect(res.status).toBe(403);
+    await Bun.sleep(400); // the real shutdown fires 100ms after a 200
+    expect(proc.exitCode).toBeNull();
+    expect(await waitForUp(PORT, 5)).toBe(true);
+  });
+}, 30000);
+
+test("SEC-delete: DELETE /comment/:id from a foreign origin is refused; same-origin works", async () => {
+  await withServer(async () => {
+    const created = await (await fetch(`${BASE}/comment`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nodeId: "a", text: "sec-delete target", submit: false }),
+    })).json();
+    const foreign = await fetch(`${BASE}/comment/${created.id}`, {
+      method: "DELETE", headers: { origin: FOREIGN_ORIGIN },
+    });
+    expect(foreign.status).toBe(403);
+    expect(await storedTexts()).toContain("sec-delete target");
+    const own = await fetch(`${BASE}/comment/${created.id}`, {
+      method: "DELETE", headers: { origin: OWN_ORIGIN },
+    });
+    expect(own.status).toBe(204);
+    expect(await storedTexts()).not.toContain("sec-delete target");
+  });
+}, 30000);
+
+test("SEC-ws: the WebSocket refuses a foreign origin and accepts the page's own", async () => {
+  function openWs(origin: string): Promise<string> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { Origin: origin } });
+      ws.onopen = () => { ws.close(); resolve("open"); };
+      ws.onerror = () => resolve("refused");
+      setTimeout(() => resolve("timeout"), 3000);
+    });
+  }
+  await withServer(async () => {
+    expect(await openWs(FOREIGN_ORIGIN)).toBe("refused");
+    expect(await openWs(OWN_ORIGIN)).toBe("open");
+  });
 }, 30000);

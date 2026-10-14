@@ -7,7 +7,8 @@
 #   1. Finds the project root (the dir with a .mcp.json that registers __PLUGIN_NAME__),
 #      generating one if a recreated worktree/checkout doesn't have it yet.
 #   2. Pre-flight: checks bun + claude, frees any stale server on the port.
-#   3. Launches Claude Code with the development channel + skip-permissions.
+#   3. Launches Claude Code with the development channel (permission prompts stay
+#      on unless you opt out with CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1, see below).
 #   4. Auto-opens the artifact URL the moment the server binds.
 #   5. Frees the port again on exit (belt-and-suspenders teardown).
 #
@@ -103,5 +104,16 @@ echo "   → Browser opens automatically once the server binds ($URL)."
 echo "   → Done? Click 'Done / Shut down' in the UI or just end the session — the port is freed on exit."
 echo
 cd "$ROOT" || die "cannot cd to $ROOT"
-# Drop --dangerously-skip-permissions if you'd rather approve each tool call.
-claude --dangerously-load-development-channels server:__PLUGIN_NAME__ --dangerously-skip-permissions
+# --dangerously-load-development-channels is required: it is what lets this session
+# receive the pinned comments.
+CLAUDE_ARGS=(--dangerously-load-development-channels "server:__PLUGIN_NAME__")
+# --dangerously-skip-permissions is OFF by default. It is opt-in because comments
+# are input you do not fully control: with the flag on, every tool call Claude makes
+# while answering one (shell commands and file edits included) runs without asking
+# you first. Turn it on only for a project where you accept that:
+#   CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1 bash start.sh
+if [ "${CHANNEL_ARTIFACT_SKIP_PERMISSIONS:-0}" = "1" ]; then
+  CLAUDE_ARGS+=(--dangerously-skip-permissions)
+  warn "CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1: Claude's tool calls will run without approval prompts."
+fi
+claude "${CLAUDE_ARGS[@]}"

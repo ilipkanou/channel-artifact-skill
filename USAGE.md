@@ -63,13 +63,22 @@ Use a new terminal because the session that built the artifact cannot receive co
 3. Starts Claude Code from the project root:
 
    ```bash
-   claude --dangerously-load-development-channels server:<plugin-name> --dangerously-skip-permissions
+   claude --dangerously-load-development-channels server:<plugin-name>
    ```
 
+   It adds `--dangerously-skip-permissions` only if you ask for it (see below).
 4. Waits up to about 45 seconds for the server, then prints the URL and, on macOS, opens it.
 5. Frees the port again when the session ends.
 
 The first time, Claude Code asks you to approve the project's MCP server. To check the connection, run `/mcp` in the new session. The plugin should show as connected, with the tools `mark_addressed`, `update_node`, `update_data` and `post_message`.
+
+Claude Code asks for approval before tool calls, as it normally does. To skip those prompts, launch with:
+
+```bash
+CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1 bash <plugin-folder>/start.sh
+```
+
+This adds `--dangerously-skip-permissions`, and `start.sh` prints a warning when it does. Every tool call Claude makes while answering a comment then runs without asking you, shell commands and file edits included. Comments are input you do not fully control, so only do this in a project where you accept that.
 
 To launch without the script, run this from the project root:
 
@@ -90,6 +99,7 @@ claude --dangerously-load-development-channels server:<plugin-name>
 - **Chat with Claude.** The panel at the bottom left. Your messages go to Claude without a pin. When Claude posts there, the panel opens and shows an unread count.
 - **Download JSON.** In the sidebar. Saves every comment as `comments.json`.
 - **Done / Shut down.** Stops the server and closes the channel, after you confirm.
+- **Address.** Open the page at `http://localhost:<port>` or `http://127.0.0.1:<port>`. The server refuses requests that name any other host, refuses posts, deletes and WebSocket connections from other websites' pages, and accepts only JSON in a POST. So another site open in your browser cannot send comments to Claude, delete them, or stop the server.
 
 ## 5. What Claude receives
 
@@ -127,6 +137,7 @@ Any of these stops the server and frees the port:
 - **Drawing.** Edit `renderArtifactInner(DATA)` in `index.html`. Give every element you want to comment on `data-node-id="<id>"`, where `<id>` matches an object's `id` in `data.json`. That is what lets `update_node` patch it. `references/building-the-viz.md` lists libraries by kind of artifact and has three worked examples.
 - **Claude's instructions.** In `server.ts`, replace the `<<CUSTOMISE: ...>>` line inside `instructions` with what the data means and how replies should read.
 - **More tools.** Add an entry to the `ListToolsRequestSchema` handler and a case to the `CallToolRequestSchema` switch in `server.ts`. Restart the MCP server (`/mcp`, then reconnect) after editing `server.ts`.
+- **Your own requests.** Every request passes `refuseForeign()` in `server.ts` first, including any route you add. If you add a `fetch` call to `index.html`, send POST bodies as JSON with the header `content-type: application/json`, even an empty `"{}"`. Otherwise the server answers 415. A request from another origin or under another host name gets 403.
 - **Port.** The port is written into `server.ts` and `start.sh` when the plugin is scaffolded. `server.ts` also reads it from the environment variable `<PLUGIN_NAME_UPPER>_PORT`, for example `ISSUE_BOARD_PORT`.
 
 ## 8. Build one by hand, without the skill
@@ -194,8 +205,8 @@ cd ~/.claude/skills/channel-artifact-skill
 bun test ./test/lifecycle.test.ts
 ```
 
-There are 22 tests. They copy the templates into a temp folder, run `bun install` there, and start real servers on port 5197. They check startup and every shutdown path, port cleanup, two sessions sharing one plugin, the chat panel, drafts, and how pins are stored. They need `lsof`.
+There are 29 tests. They copy the templates into a temp folder, run `bun install` there, and start real servers on port 5197. They check startup and every shutdown path, port cleanup, two sessions sharing one plugin, the chat panel, drafts, and how pins are stored. Seven of them check the request guard: posts, deletes, `/shutdown` and WebSocket connections from another origin are refused, a non-JSON POST is refused, a foreign host is refused, and the page's own same-origin requests still work. They need `lsof`.
 
 ## 10. When something breaks
 
-`references/troubleshooting.md` covers launch failures, pins that never reach Claude, stuck ports, rendering problems and two sessions sharing one plugin. The most common silent failure is a non-string value in the channel metadata, which closes the MCP connection without an error. The template already converts every value to a string.
+`references/troubleshooting.md` covers launch failures, pins that never reach Claude, stuck ports, requests refused with 403 or 415, rendering problems and two sessions sharing one plugin. The most common silent failure is a non-string value in the channel metadata, which closes the MCP connection without an error. The template already converts every value to a string.

@@ -8,6 +8,8 @@
  * - Claude addresses the comment and calls the `mark_addressed` /
  *   `update_node` / `update_data` tools to update the artifact in place.
  *   The UI live-refreshes via WebSocket.
+ * - Refuses requests that come from other websites open in the same browser
+ *   (Host, Origin and Content-Type checks; see refuseForeign below).
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -29,6 +31,48 @@ const CHAT_PATH = join(DIR, "chat.json");
 const DATA_PATH = join(DIR, "data.json");
 const HTML_PATH = join(DIR, "index.html");
 const RUNTIME_PATH = join(DIR, ".runtime.json");
+
+// --- Request guard ---
+// The server listens on 127.0.0.1 only, but a page from any other website open in
+// the same browser can still send requests to it. Without these checks such a page
+// could post a comment (which is forwarded into the live Claude session), delete
+// comments, or stop the server. Every request passes refuseForeign() first.
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
+const ALLOWED_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+
+function refusal(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// Returns the Response to send when the request must be refused, or null to proceed.
+function refuseForeign(req: Request): Response | null {
+  // 1. Host, on EVERY request (reads too). DNS-rebinding guard: a site that points
+  //    its own name at 127.0.0.1 reaches this port with its own name in Host.
+  const host = (req.headers.get("host") ?? "").toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) return refusal(403, "host not allowed");
+
+  // 2. Origin, on anything that is not a plain read, and on the WebSocket upgrade.
+  //    Browsers send Origin on cross-site POST/DELETE and on every WebSocket
+  //    handshake. No Origin means a non-browser client on this machine (curl, the
+  //    tests), which is allowed.
+  const isUpgrade = (req.headers.get("upgrade") ?? "").toLowerCase() === "websocket";
+  const changesState = req.method !== "GET" && req.method !== "HEAD";
+  const origin = req.headers.get("origin");
+  if ((changesState || isUpgrade) && origin !== null && !ALLOWED_ORIGINS.has(origin.toLowerCase())) {
+    return refusal(403, "origin not allowed");
+  }
+
+  // 3. Content-Type on every POST. A cross-site HTML form, or a cross-site fetch
+  //    that skips the CORS preflight, can only send form or text/plain bodies.
+  if (req.method === "POST") {
+    const type = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (type !== "application/json") return refusal(415, "content-type must be application/json");
+  }
+  return null;
+}
 
 type Comment = {
   id: string;
@@ -371,6 +415,8 @@ try {
     port: PORT,
     hostname: "127.0.0.1",
     async fetch(req, server) {
+      const refused = refuseForeign(req);
+      if (refused) return refused;
       const url = new URL(req.url);
 
       if (url.pathname === "/ws") {

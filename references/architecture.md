@@ -77,7 +77,7 @@ Claude's reply goes through tool calls (`mark_addressed`, `update_node`, `update
 
 ## When to deviate
 
-- **Multi-user / remote access.** This pattern assumes localhost. If you want the artifact accessible to teammates, put the bun server behind an authenticated reverse proxy and deal with session isolation. The state files become a shared DB.
+- **Multi-user / remote access.** This pattern assumes localhost. If you want the artifact accessible to teammates, put the bun server behind an authenticated reverse proxy and deal with session isolation. The state files become a shared DB. The request guard in `server.ts` refuses any Host other than `localhost:<port>` / `127.0.0.1:<port>` and any foreign Origin, so have the proxy send `Host: 127.0.0.1:<port>` and add the proxy's public origin to `ALLOWED_ORIGINS`.
 - **High-frequency data.** If `data.json` mutates many times per second (live metric stream), use a pub-sub instead of file writes + broadcast. The file-write approach is fine up to ~10 writes/sec.
 - **Large binary assets.** Base64 in `data.json` is a footgun. Serve assets separately and reference by URL.
 - **You want the channel's replies to be user-visible in the session.** The default is that tool calls are silent mutations. If you also want Claude to *speak* when addressing each comment (e.g., a running commentary in the terminal), instruct it to do so in the MCP `instructions` field.

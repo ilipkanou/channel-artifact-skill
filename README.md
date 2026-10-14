@@ -8,7 +8,7 @@ Use it for a dashboard you want to question, an outline you are reviewing, a kan
 
 The skill scaffolds a small plugin folder. Its `server.ts` runs on Bun and does two jobs in one process:
 
-- It serves the page at `http://localhost:<port>` (listening on 127.0.0.1 only) and pushes live updates over a WebSocket.
+- It serves the page at `http://localhost:<port>` (listening on 127.0.0.1 only) and pushes live updates over a WebSocket. It refuses requests from other websites open in your browser (see [Limitations and safety](#limitations-and-safety)).
 - It is an MCP server that Claude Code starts over stdio. It declares the `claude/channel` capability, so it can push events into the session.
 
 ```text
@@ -73,15 +73,16 @@ For a single project, clone it into `<your-project>/.claude/skills/channel-artif
    ```
 
    The session you used to build the artifact cannot receive comments. `start.sh` starts a fresh Claude Code session with the channel attached.
-4. Approve the MCP server prompt the first time. On macOS the browser opens `http://localhost:<port>` once the server is up.
+4. Approve the MCP server prompt the first time. Claude Code then asks for approval before tool calls, as it normally does. On macOS the browser opens `http://localhost:<port>` once the server is up.
 5. Turn on Pin mode (top right), click or select something, type your comment, and press Save pin or Submit to Claude.
 
 [USAGE.md](USAGE.md) covers every step in detail, including how to build an artifact by hand without the skill.
 
 ## Limitations and safety
 
-- `start.sh` launches Claude Code with `--dangerously-skip-permissions`, so tool calls run without approval prompts. Delete that flag from `start.sh` if you want to approve each call.
-- The local server has no authentication and does not check where a request comes from. It listens on 127.0.0.1 only, but any program on your machine can post a comment, and that comment is forwarded to Claude. A web page open in your browser may be able to do the same with a plain form-style POST, and to stop the server through `/shutdown`. Treat incoming comments as untrusted input, especially while skip-permissions is on.
+- `start.sh` keeps Claude Code's permission prompts on. To turn them off, run `CHANNEL_ARTIFACT_SKIP_PERMISSIONS=1 bash <plugin-folder>/start.sh`, which adds `--dangerously-skip-permissions`. Then every tool call Claude makes while answering a comment runs without asking you, shell commands and file edits included. Only do this in a project where you accept that.
+- The local server listens on 127.0.0.1 only and has no login. It refuses requests from other websites open in your browser. A request must name `localhost:<port>` or `127.0.0.1:<port>` as its host, which blocks a trick called DNS rebinding. A POST, DELETE or WebSocket connection sent from another site's page is refused. A POST must have the content type `application/json`, which a plain HTML form cannot send. So another site cannot post a comment, delete one, or stop the server.
+- Any program already running on your machine can still post a comment, and that comment is forwarded to Claude. Treat comments as untrusted input, especially with permission prompts turned off.
 - State is plain JSON files, read and rewritten whole on each change. That works for one person, not for heavy concurrent writes.
 - If two sessions load the same plugin, the first one owns the port. The second runs without the web server, and its changes reach the page only through the page's 30-second refresh.
 - Changes to `server.ts` take effect only after the MCP server restarts (`/mcp`, then reconnect, in the channel session).

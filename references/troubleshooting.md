@@ -101,6 +101,16 @@ Usually a chain reaction: `renderSankey()` throws, and the rest of `render()` (K
 
 The running bun is stale — `server.ts` was edited but the server wasn't respawned. `/mcp` reconnect, OR if an orphan is holding the port, `kill $(lsof -ti:<port>)` and reconnect.
 
+### A request to the server fails with 403 or 415
+
+The server's request guard (`refuseForeign()` in `server.ts`) refused it. That is how it stops other websites open in the same browser from posting comments or stopping the server.
+
+- **415 `content-type must be application/json`**: a POST without a JSON content type. Send `headers: { "content-type": "application/json" }` and a JSON body, even `"{}"` for a POST that needs no data.
+- **403 `origin not allowed`**: a POST, DELETE or WebSocket upgrade sent from a page whose origin is not `http://localhost:<port>` or `http://127.0.0.1:<port>`. Open the artifact at one of those two addresses.
+- **403 `host not allowed`**: the request reached the port under another name (a hostname, `0.0.0.0`, or a reverse proxy that rewrites `Host`). Use `localhost` or `127.0.0.1`.
+
+Fix the caller; don't loosen the guard.
+
 ### Claude responds to comments I deleted
 
 `deliverChannel` was called on the DELETE path. It must NOT be — only adds should notify Claude. Remove the call from the `DELETE /comment/:id` branch.
@@ -169,7 +179,7 @@ claude --dangerously-load-development-channels server:<plugin-name>
 
 If this is the first time, approve the MCP server prompt. The new session prints `<plugin-name>: http://localhost:<port>` to stderr when the server boots. Open that URL.
 
-To verify: `/mcp` should show `<plugin-name> · ✔ connected` with tools `mark_addressed`, `update_node`, `update_data`.
+To verify: `/mcp` should show `<plugin-name> · ✔ connected` with tools `mark_addressed`, `update_node`, `update_data`, `post_message`.
 
 ## Comment-layer gotchas (from building the bundled template)
 
@@ -185,9 +195,12 @@ Opening the panel and focusing the textarea **collapses the selection**. You mus
 
 The submit handler needs an `activePin` branch — without it, re-opening a pin and typing hits a dead `else`. Follow-ups post with `parentId` and **no** x/y (so they thread under the original instead of dropping a second marker).
 
-### Area highlight drifts after Claude edits that text
+### Area pin shows "anchor gone" after Claude edits that text
 
-Highlights are stored as absolute page rects, so an `update_node` edit that reflows the text leaves the box at the old spot. This is intentional (a text-search re-highlighter is fragile on quote-heavy content). The durable value is the exact quote already sent to Claude; the box re-anchors on the next interaction. Don't "fix" it with a DOM highlighter.
+An area pin stores the exact quoted text and the `data-node-id` of the element it was selected in. On every render (a load, a WebSocket update, the 30-second refresh, a window resize) `resolveOne()` searches that element's live text for the quote with `findTextRange()` and draws the highlight where the quote now sits, so reflow does not leave the box behind. If an `update_node` edit changes or removes the quoted words, the quote is no longer found: the pin leaves the page and is listed in the sidebar as "anchor gone" (purple, dashed), with its thread kept. That is intended (Done-and-Gone), because the text the comment pointed at no longer exists. Two limits:
+
+- If the quote appears more than once in the element, the highlight goes on the first occurrence.
+- An area pin selected outside any `data-node-id` element has no element to search, so it shows as "anchor gone" from the first render. Give the elements people will quote from a `data-node-id`.
 
 ### A `renderArtifactInner` exception blanks the page
 
