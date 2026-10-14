@@ -4,7 +4,7 @@ Every failure mode we've hit while building this pattern, with the one-liner fix
 
 ## Setup / launch
 
-### `/mcp` shows `customer-journey · ✘ failed`
+### `/mcp` shows `<plugin-name> · ✘ failed`
 
 Three common causes, in order:
 
@@ -130,7 +130,7 @@ Default size (16px) is too small. Bump to 22px with a 2px white border, and keep
 
 ### Two Claude sessions want the same channel — one fails
 
-Expected. The first session to spawn bun owns the HTTP port; the second hits `EADDRINUSE`, logs `running stdio-only`, and serves tool calls against the shared `data.json` + `comments.json`. Both sessions can mark comments addressed, update nodes, etc. Only the first session's bun emits WebSocket broadcasts — the browser connected to port 5180 only sees updates from that one. This is fine for most workflows.
+Expected. The first session to spawn bun owns the HTTP port; the second hits `EADDRINUSE`, logs `running stdio-only`, and serves tool calls against the shared `data.json` + `comments.json`. Both sessions can mark comments addressed, update nodes, etc. Only the first session's bun emits WebSocket broadcasts — the browser connected to that port only sees updates from that one. This is fine for most workflows.
 
 ### WebSocket keeps disconnecting
 
