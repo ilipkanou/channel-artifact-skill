@@ -4,6 +4,10 @@ A Claude Code skill that builds interactive web pages you can leave comments on.
 
 Use it for a dashboard you want to question, an outline you are reviewing, a kanban board, a data model graph, or an image you want to ask about. The comment layer is the same for all of them. Only the code that draws your data changes.
 
+## Real-world use
+
+The comment layer was first built to review comic-style carousel posts for the MAGIC Quick Wins Instagram and Facebook pages. Each review page showed one series of posts, panel by panel. The reviewer dragged a box over the part of a panel that was wrong and wrote what to change. Claude, in the session attached to the page, fixed the panel image and answered under the pin. Three review sessions in June and July 2026 produced 72 comments on 15 posts. Claude answered all 72 on the page, and 56 of them were boxes drawn on an image. The five posts reviewed on July 14 and 15, 2026 went live on July 15 to 19.
+
 ## How it works
 
 The skill scaffolds a small plugin folder. Its `server.ts` runs on Bun and does two jobs in one process:
@@ -60,23 +64,57 @@ git clone https://github.com/ilipkanou/channel-artifact-skill.git ~/.claude/skil
 bash ~/.claude/skills/channel-artifact-skill/scripts/setup.sh
 ```
 
+The second line checks for Bun and installs it if it is missing.
+
 For a single project, clone it into `<your-project>/.claude/skills/channel-artifact-skill` instead.
 
 ## Quick start
 
-1. Start Claude Code in your project and ask for an artifact, for example: "Build me an interactive artifact for our release checklist that I can pin comments on."
-2. Claude asks a few questions first (what the page shows, where the data comes from, what you will comment on, the plugin name and folder). Then it scaffolds the plugin and writes the code that draws your data.
-3. Open a new terminal and run the launcher Claude gives you:
+Each step says what it does and gives the line to copy or type.
+
+1. **Ask Claude for an interactive or channel artifact.** Start Claude Code in your project and describe the page you want, for example:
+
+   ```text
+   Build me an interactive artifact for our release checklist that I can pin comments on.
+   ```
+
+   Claude asks a few questions first: what the page shows, where the data comes from, what you will comment on, and the plugin name and folder. Then it scaffolds the plugin, runs `bun install` and writes the code that draws your data.
+
+2. **Launch it in a new terminal.** The session that built the artifact cannot receive comments, so `start.sh` starts a fresh Claude Code session with the channel attached. Use the folder Claude gives you:
 
    ```bash
    bash <plugin-folder>/start.sh
    ```
 
-   The session you used to build the artifact cannot receive comments. `start.sh` starts a fresh Claude Code session with the channel attached.
-4. Approve the MCP server prompt the first time. Claude Code then asks for approval before tool calls, as it normally does. On macOS the browser opens `http://localhost:<port>` once the server is up.
-5. Turn on Pin mode (top right), click or select something, type your comment, and press Save pin or Submit to Claude.
+3. **Approve and check the connection.** Approve the MCP server prompt the first time. Claude Code then asks for approval before tool calls, as it normally does. Type this in the new session:
+
+   ```text
+   /mcp
+   ```
+
+   The plugin should show as connected, with the tools `mark_addressed`, `update_node`, `update_data` and `post_message`. On macOS the browser opens `http://localhost:<port>` once the server is up; elsewhere, open the URL that `start.sh` prints.
+
+4. **Pin your first comment.** Turn on Pin mode (top right), click or select something, type your comment, and press Submit to Claude. When Claude answers, the pin turns green and the reply appears under your comment.
+
+5. **Close it when you are done.** Press Done / Shut down on the page and confirm. Then end the Claude Code session: type `/exit`, or press Ctrl-C in its terminal. The section below explains what closes and what stays.
 
 [USAGE.md](USAGE.md) covers every step in detail, including how to build an artifact by hand without the skill.
+
+### Using it day to day
+
+- **Collect, then send.** Press Save pin to keep a comment as a draft. Send all drafts at once with Submit all in the sidebar, and Claude answers each one.
+- **Read the answer under the pin.** When a comment asks for a change, Claude edits the page's data and the page redraws while you watch. Reopen a pin to add a follow-up.
+- **Talk without a pin.** Use the chat panel at the bottom left for questions that are not about one spot.
+- **Keep a record.** Download JSON in the sidebar saves every comment and reply.
+
+### When you are done: how it closes
+
+- **What closes it.** The Done / Shut down button (after you confirm), ending the Claude Code session, or Ctrl-C in its terminal. All three reach the same shutdown in `server.ts`.
+- **What happens.** The server tells open tabs it is stopping, and they show "Server stopped" with "The channel is closed and the port is freed. Safe to close this tab." It closes the web page and its live connection, deletes `.runtime.json` (the file that records its process ID and port), and exits. That process is also the MCP server, so the channel to Claude closes with it.
+- **Extra steps that free the port.** If you launched with `start.sh`, it runs `stop.sh` once more when the Claude Code session ends, so the port is free. The plugin also asks Claude Code to run `stop.sh` at session end (a SessionEnd hook); whether that hook fires for a development channel is not confirmed yet.
+- **If a port stays busy.** Run `bash <plugin-folder>/stop.sh`. It stops the process named in `.runtime.json` and checks the port. With no `.runtime.json`, name the port: `bash <plugin-folder>/stop.sh --port <port>`. It reports that the port is free, or warns if something still holds it.
+- **What stays.** The plugin folder, with `data.json`, `comments.json` and `chat.json`, and the plugin's entry in your project's `.mcp.json`. So `bash <plugin-folder>/start.sh` brings the same page back next time.
+- **To remove an artifact for good.** After it has stopped, delete its entry from the project's `.mcp.json`, then delete the plugin folder.
 
 ## Limitations and safety
 
